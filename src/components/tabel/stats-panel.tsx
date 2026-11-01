@@ -12,13 +12,14 @@ import {
 import { BarChart3, CalendarCheck2, Clock3, TrendingUp, Wallet } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
-import type { Profile } from '@/lib/tabel'
+import type { HalfStats, Profile } from '@/lib/tabel'
 import {
   MONTHS_RU,
   WD_RU,
   dayHours,
   fmtMoney,
   fmtNum,
+  halfStats,
   isoWeekday,
   monthStats,
 } from '@/lib/tabel'
@@ -68,6 +69,38 @@ function StatCard({
   )
 }
 
+/** карточка половины месяца: часы, рабочие дни и деньги за 1–15 / 16–конец */
+function HalfCard({ h, monthHours }: { h: HalfStats; monthHours: number }) {
+  const share = monthHours > 0 ? Math.min(100, Math.round((h.totalHours / monthHours) * 100)) : 0
+  return (
+    <div className="rounded-2xl border bg-card p-4 text-card-foreground">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          {h.half === 1 ? '1-я половина' : '2-я половина'}
+        </span>
+        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">
+          {h.from}–{h.to}
+        </span>
+      </div>
+      <div className="mt-2 text-2xl font-bold tracking-tight tabular-nums">
+        {fmtNum(h.totalHours)} <span className="text-sm font-semibold text-muted-foreground">ч</span>
+      </div>
+      <div className="mt-0.5 truncate text-xs text-muted-foreground">
+        {h.workDays} раб. дн.{h.salary !== null ? ` · ${fmtMoney(h.salary)}` : ''}
+      </div>
+      <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
+        <div
+          className={cn('h-full rounded-full', h.half === 1 ? 'bg-emerald-500' : 'bg-sky-500')}
+          style={{ width: `${share}%` }}
+        />
+      </div>
+      <div className="mt-1 text-right text-[10px] tabular-nums text-muted-foreground">
+        {share}% часов месяца
+      </div>
+    </div>
+  )
+}
+
 function ChartTooltip({
   active,
   payload,
@@ -93,6 +126,7 @@ function ChartTooltip({
 
 export function StatsPanel({ profile, y, m }: { profile: Profile; y: number; m: number }) {
   const st = monthStats(profile, y, m)
+  const [h1, h2] = halfStats(profile, y, m)
   const entries = profile.months[`${y}-${String(m + 1).padStart(2, '0')}`] ?? {}
 
   const data: DayBar[] = Array.from({ length: st.days }, (_, i) => {
@@ -136,6 +170,11 @@ export function StatsPanel({ profile, y, m }: { profile: Profile; y: number; m: 
           }
           highlight={st.salary !== null}
         />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <HalfCard h={h1} monthHours={st.totalHours} />
+        <HalfCard h={h2} monthHours={st.totalHours} />
       </div>
 
       <Card className="py-4">

@@ -1,16 +1,18 @@
 'use client'
 
+import { Fragment } from 'react'
 import { CalendarDays, MoonStar } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import type { DayEntry, Profile } from '@/lib/tabel'
+import type { DayEntry, HalfStats, Profile } from '@/lib/tabel'
 import {
   WD_RU,
   dayHours,
   fmtLunchShort,
   fmtNum,
   fmtTimeShort,
+  halfStats,
   isOvernight,
   monthStats,
 } from '@/lib/tabel'
@@ -112,9 +114,29 @@ function DayRow({
   )
 }
 
+/** полоса-разделитель половин месяца: итоги 1–15 и начало 16–конец */
+function HalfDivider({ h1, h2 }: { h1: HalfStats; h2: HalfStats }) {
+  return (
+    <div
+      className="sticky top-0 z-10 flex items-center gap-2.5 bg-muted px-4 py-1.5"
+      role="separator"
+      aria-label={`Граница половин месяца: 1–${h1.to} и ${h2.from}–${h2.to}`}
+    >
+      <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+        1-я половина · {fmtNum(h1.totalHours)} ч
+      </span>
+      <span className="h-px flex-1 bg-border" aria-hidden />
+      <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+        2-я половина ({h2.from}–{h2.to}) · {fmtNum(h2.totalHours)} ч
+      </span>
+    </div>
+  )
+}
+
 export function DayList({ profile, y, m, today, onEditDay, onFillClick }: Props) {
   const entries = profile.months[`${y}-${String(m + 1).padStart(2, '0')}`] ?? {}
   const st = monthStats(profile, y, m)
+  const [h1, h2] = halfStats(profile, y, m)
   const dim = st.days
   const filled = Object.keys(entries).length
   const isCurrentMonth =
@@ -154,15 +176,17 @@ export function DayList({ profile, y, m, today, onEditDay, onFillClick }: Props)
         ) : (
           <div className="pretty-scroll max-h-[560px] divide-y overflow-y-auto">
             {Array.from({ length: dim }, (_, i) => i + 1).map((d) => (
-              <DayRow
-                key={d}
-                d={d}
-                y={y}
-                m={m}
-                entry={entries[String(d)]}
-                isToday={isCurrentMonth && today.getDate() === d}
-                onEdit={() => onEditDay(d)}
-              />
+              <Fragment key={d}>
+                {d === 16 && <HalfDivider h1={h1} h2={h2} />}
+                <DayRow
+                  d={d}
+                  y={y}
+                  m={m}
+                  entry={entries[String(d)]}
+                  isToday={isCurrentMonth && today.getDate() === d}
+                  onEdit={() => onEditDay(d)}
+                />
+              </Fragment>
             ))}
           </div>
         )}

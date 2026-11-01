@@ -153,6 +153,25 @@ export function exportLine(d: Date, e: DayEntry | undefined): string {
   return `${date}  ${range} ${tail}`
 }
 
+type RangeAcc = { workDays: number; totalHours: number; lunchHours: number; maxHours: number }
+
+/** сбор итогов по диапазону дней [from..to] включительно */
+function collectRange(entries: Record<string, DayEntry>, from: number, to: number): RangeAcc {
+  const acc: RangeAcc = { workDays: 0, totalHours: 0, lunchHours: 0, maxHours: 0 }
+  for (let d = from; d <= to; d++) {
+    const e = entries[String(d)]
+    const h = dayHours(e)
+    if (h === null) continue
+    acc.workDays += 1
+    acc.totalHours += h
+    if (e!.lunch) acc.lunchHours += e!.lunchMin / 60
+    if (h > acc.maxHours) acc.maxHours = h
+  }
+  acc.totalHours = Math.round(acc.totalHours * 100) / 100
+  acc.lunchHours = Math.round(acc.lunchHours * 100) / 100
+  return acc
+}
+
 export type MonthStats = {
   days: number
   workDays: number
@@ -166,49 +185,128 @@ export type MonthStats = {
 export function monthStats(profile: Profile, y: number, m: number): MonthStats {
   const entries = profile.months[monthKey(y, m)] ?? {}
   const dim = daysInMonth(y, m)
-  let workDays = 0
-  let totalHours = 0
-  let lunchHours = 0
-  let maxHours = 0
-  for (let d = 1; d <= dim; d++) {
-    const e = entries[String(d)]
-    const h = dayHours(e)
-    if (h === null) continue
-    workDays += 1
-    totalHours += h
-    if (e!.lunch) lunchHours += e!.lunchMin / 60
-    if (h > maxHours) maxHours = h
-  }
-  totalHours = Math.round(totalHours * 100) / 100
+  const a = collectRange(entries, 1, dim)
   return {
     days: dim,
-    workDays,
-    totalHours,
-    lunchHours: Math.round(lunchHours * 100) / 100,
-    avgHours: workDays ? Math.round((totalHours / workDays) * 100) / 100 : 0,
-    maxHours,
-    salary: profile.rate ? Math.round(totalHours * profile.rate) : null,
+    workDays: a.workDays,
+    totalHours: a.totalHours,
+    lunchHours: a.lunchHours,
+    avgHours: a.workDays ? Math.round((a.totalHours / a.workDays) * 100) / 100 : 0,
+    maxHours: a.maxHours,
+    salary: profile.rate ? Math.round(a.totalHours * profile.rate) : null,
+  }
+}
+
+// ─── половины месяца (аванс / расчёт): 1–15 и 16–конец ──────────────────────
+
+/** последняя дата первой половины месяца */
+export const FIRST_HALF_END = 15
+
+/** границы половины: 1 → [1..15], 2 → [16..конец (31/30/29/28)] */
+export function halfRange(half: 1 | 2, y: number, m: number): { from: number; to: number } {
+  const dim = daysInMonth(y, m)
+  return half === 1
+    ? { from: 1, to: Math.min(FIRST_HALF_END, dim) }
+    : { from: Math.min(FIRST_HALF_END + 1, dim), to: dim }
+}
+
+export type HalfStats = {
+  half: 1 | 2
+  from: number
+  to: number
+  workDays: number
+  totalHours: number
+  /** ставка ₽/час × часы половины; null — ставка не задана */
+  salary: number | null
+}
+
+/** итоги по двум половинам месяца: [1-я (1–15), 2-я (16–конец)] */
+export function halfStats(profile: Profile, y: number, m: number): [HalfStats, HalfStats] {
+  const entries = profile.months[monthKey(y, m)] ?? {}
+  const mk = (half: 1 | 2): HalfStats => {
+    const { from, to } = halfRange(half, y, m)
+    const a = collectRange(entries, from, to)
+    return {
+      half,
+      from,
+      to,
+      workDays: a.workDays,
+      totalHours: a.totalHours,
+      salary: profile.rate ? Math.round(a.totalHours * profile.rate) : null,
+    }
+  }
+  return [mk(1), mk(2)]
+}
+
+// ─── период выгрузки ────────────────────────────────────────────────────────
+
+/** весь месяц | 1-я половина (1–15) | 2-я половина (16–конец) */
+export type ExportPeriod = 'month' | 'first' | 'second'
+
+export type PeriodStats = {
+  workDays: number
+  totalHours: number
+  salary: number | null
+}
+
+/** итоги за период выгрузки (весь месяц или половину) */
+export function periodStats(
+  profile: Profile,
+  y: number,
+  m: number,
+  period: ExportPeriod,
+): PeriodStats {
+  const entries = profile.months[monthKey(y, m)] ?? {}
+  const half = period === 'second' ? 2 : 1
+  const from = period === 'month' ? 1 : halfRange(half, y, m).from
+  const to = period === 'month' ? daysInMonth(y, m) : halfRange(half, y, m).to
+  const a = collectRange(entries, from, to)
+  return {
+    workDays: a.workDays,
+    totalHours: a.totalHours,
+    salary: profile.rate ? Math.round(a.totalHours * profile.rate) : null,
   }
 }
 
 /**
- * Полная выгрузка за месяц — по строке на каждый день.
+ * Полная выгрузка — по строке на каждый день периода.
  * withHeader: добавить шапку с именем и итогами (по умолчанию выключена,
  * чтобы формат совпадал с требованием HR один в один).
+ * period: 'month' — все дни месяца; 'first' — только 1–15;
+ * 'second' — только 16–конец месяца.
  */
-export function buildExport(profile: Profile, y: number, m: number, withHeader: boolean): string {
+export function buildExport(
+  profile: Profile,
+  y: number,
+  m: number,
+  withHeader: boolean,
+  period: ExportPeriod = 'month',
+): string {
   const lines: string[] = []
+  const half = period === 'second' ? 2 : 1
+  const range = period === 'month' ? { from: 1, to: daysInMonth(y, m) } : halfRange(half, y, m)
   if (withHeader) {
-    const st = monthStats(profile, y, m)
-    lines.push(`${profile.name} — ${MONTHS_RU[m].toLowerCase()} ${y} г.`)
+    const st = periodStats(profile, y, m, period)
+    const rangeLabel =
+      period === 'month' ? '' : `, ${period === 'first' ? '1-я' : '2-я'} половина (${range.from}–${range.to})`
+    lines.push(`${profile.name} — ${MONTHS_RU[m].toLowerCase()} ${y} г.${rangeLabel}`)
     const parts = [`рабочих дней: ${st.workDays}`, `всего часов: ${fmtNum(st.totalHours)}`]
     if (st.salary !== null) parts.push(`примерная ЗП: ${fmtMoney(st.salary)}`)
     lines.push(parts.join(', '))
+    if (period === 'month') {
+      // разбивка по половинам — аванс и расчёт
+      for (const h of halfStats(profile, y, m)) {
+        const hp = [
+          `${h.half === 1 ? '1-я' : '2-я'} половина (${h.from}–${h.to}): ${h.workDays} раб. дн., ${fmtNum(h.totalHours)} ч`,
+        ]
+        if (h.salary !== null) hp.push(fmtMoney(h.salary))
+        lines.push(hp.join(', '))
+      }
+    }
     lines.push('')
   }
   const entries = profile.months[monthKey(y, m)] ?? {}
-  const dim = daysInMonth(y, m)
-  for (let d = 1; d <= dim; d++) {
+  for (let d = range.from; d <= range.to; d++) {
     lines.push(exportLine(new Date(y, m, d), entries[String(d)]))
   }
   return lines.join('\n')

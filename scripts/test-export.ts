@@ -1,5 +1,5 @@
 // Проверка формата выгрузки для HR на реальном коде приложения
-import { buildExport, exportLine, dayHours, makeTestProfile } from './test-helpers'
+import { buildExport, exportLine, dayHours, halfRange, halfStats, makeTestProfile, periodStats } from './test-helpers'
 
 const p = makeTestProfile()
 
@@ -38,6 +38,49 @@ checks.push(['ночная смена 20-6 = 10 ч', overnight === 10])
 // обед 1,5 ч
 const lunch90 = dayHours({ off: false, start: '09:00', end: '18:00', lunch: true, lunchMin: 90, place: '' })
 checks.push(['обед 1,5 ч: 9-18 = 7,5 ч', lunch90 === 7.5])
+
+// ─── половины месяца (1–15 и 16–конец) ───────────────────────────────────────
+// октябрь 2026: 31 день; все рабочие дни теста — во второй половине
+const [h1, h2] = halfStats(p, 2026, 9)
+checks.push(['границы 1-й половины: 1–15', JSON.stringify(halfRange(1, 2026, 9)) === '{"from":1,"to":15}'])
+checks.push(['границы 2-й половины: 16–31', JSON.stringify(halfRange(2, 2026, 9)) === '{"from":16,"to":31}'])
+checks.push(['февраль 2026 (28): 16–28', halfRange(2, 2026, 1).to === 28])
+checks.push(['февраль 2024 (29, високосный): 16–29', halfRange(2, 2024, 1).to === 29])
+checks.push(['1-я половина: 0 дн., 0 ч', h1.workDays === 0 && h1.totalHours === 0])
+checks.push(['2-я половина: 5 дн., 48 ч', h2.workDays === 5 && h2.totalHours === 48])
+checks.push(['ЗП половин: 0 ₽ и 24 000 ₽', h1.salary === 0 && h2.salary === 24000])
+
+const ps = periodStats(p, 2026, 9, 'month')
+checks.push(['periodStats месяц = месяцу', ps.workDays === 5 && ps.totalHours === 48 && ps.salary === 24000])
+checks.push(['periodStats 1-я = пусто', periodStats(p, 2026, 9, 'first').totalHours === 0])
+checks.push(['periodStats 2-я = 48 ч', periodStats(p, 2026, 9, 'second').totalHours === 48])
+
+const first = buildExport(p, 2026, 9, false, 'first').split('\n')
+checks.push(['выгрузка 1-й: 15 строк', first.length === 15])
+checks.push(['выгрузка 1-я: начинается с 01.10', first[0] === '01.10.2026  Выходной'])
+checks.push(['выгрузка 1-я: кончается 15.10', first[14] === '15.10.2026  Выходной'])
+
+const second = buildExport(p, 2026, 9, false, 'second').split('\n')
+checks.push(['выгрузка 2-й: 16 строк', second.length === 16])
+checks.push(['выгрузка 2-я: начинается с 16.10', second[0] === '16.10.2026  Выходной'])
+checks.push(['выгрузка 2-я: кончается 31.10', second[15] === '31.10.2026  9-20 Склад без обеда'])
+
+const withHeader = buildExport(p, 2026, 9, true, 'month').split('\n')
+// toLocaleString('ru-RU') даёт неразрывные пробелы в числах — нормализуем к обычным
+const norm = (s: string) => s.replace(/\u00A0/g, ' ')
+checks.push(['шапка: строка 1-й половины', norm(withHeader[2]) === '1-я половина (1–15): 0 раб. дн., 0 ч, 0 ₽'])
+checks.push(['шапка: строка 2-й половины', norm(withHeader[3]) === '2-я половина (16–31): 5 раб. дн., 48 ч, 24 000 ₽'])
+
+const secondHeader = buildExport(p, 2026, 9, true, 'second').split('\n')
+checks.push([
+  'шапка 2-й: заголовок с периодом',
+  secondHeader[0] === 'Иван — октябрь 2026 г., 2-я половина (16–31)',
+])
+checks.push([
+  'шапка 2-й: итоги половины',
+  norm(secondHeader[1]) === 'рабочих дней: 5, всего часов: 48, примерная ЗП: 24 000 ₽',
+])
+checks.push(['шапка 2-й: без разбивки по половинам', !secondHeader.slice(0, 4).some((l) => l.includes('1-я половина'))])
 
 let failed = 0
 for (const [name, ok] of checks) {

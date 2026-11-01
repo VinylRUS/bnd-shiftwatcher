@@ -19,8 +19,15 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { useTabel } from '@/lib/store'
-import type { Profile } from '@/lib/tabel'
-import { buildExport, fmtMoney, fmtNum, monthStats } from '@/lib/tabel'
+import type { ExportPeriod, Profile } from '@/lib/tabel'
+import {
+  buildExport,
+  daysInMonth,
+  fmtMoney,
+  fmtNum,
+  periodStats,
+} from '@/lib/tabel'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 /** копирование с запасным вариантом для сайтов без https (Clipboard API недоступен) */
 async function copyText(text: string): Promise<boolean> {
@@ -70,24 +77,33 @@ function safeName(s: string): string {
 
 export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: number }) {
   const [withHeader, setWithHeader] = useState(false)
+  const [period, setPeriod] = useState<ExportPeriod>('month')
   const [pending, setPending] = useState<{ profiles: Profile[]; activeId: string; date?: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const replaceAll = useTabel((s) => s.replaceAll)
 
-  const st = monthStats(profile, y, m)
-  const text = buildExport(profile, y, m, withHeader)
+  const st = periodStats(profile, y, m, period)
+  const text = buildExport(profile, y, m, withHeader, period)
   const lines = text.split('\n')
+  const dim = daysInMonth(y, m)
   const mm = String(m + 1).padStart(2, '0')
+  const suffix = period === 'month' ? '' : period === 'first' ? '_1-15' : `_16-${dim}`
+  const periodLabel =
+    period === 'month' ? 'весь месяц' : period === 'first' ? '1-я половина (1–15)' : `2-я половина (16–${dim})`
 
   const onCopy = async () => {
     const ok = await copyText(text)
-    if (ok) toast.success('Скопировано', { description: 'Вставьте в сообщение для HR' })
+    if (ok)
+      toast.success('Скопировано', {
+        description: `${periodLabel[0].toUpperCase()}${periodLabel.slice(1)} — вставьте в сообщение для HR`,
+      })
     else toast.error('Не удалось скопировать', { description: 'Скачайте файл .txt и отправьте его' })
   }
 
   const onDownloadTxt = () => {
-    downloadBlob(`Табель_${safeName(profile.name)}_${y}-${mm}.txt`, text)
-    toast.success('Файл сохранён', { description: `Табель_${safeName(profile.name)}_${y}-${mm}.txt` })
+    const name = `Табель_${safeName(profile.name)}_${y}-${mm}${suffix}.txt`
+    downloadBlob(name, text)
+    toast.success('Файл сохранён', { description: name })
   }
 
   const onBackup = () => {
@@ -147,11 +163,34 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
             Выгрузка для HR
           </CardTitle>
           <CardDescription>
-            Каждый день месяца отдельной строкой — можно копировать или скачать файлом
+            Каждый день периода отдельной строкой — можно копировать или скачать файлом
           </CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-3 p-4">
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Период выгрузки</span>
+            <ToggleGroup
+              type="single"
+              value={period}
+              onValueChange={(v) => v && setPeriod(v as ExportPeriod)}
+              variant="outline"
+              size="sm"
+              className="w-full"
+              aria-label="Период выгрузки для HR"
+            >
+              <ToggleGroupItem value="month" className="text-xs">
+                Весь месяц
+              </ToggleGroupItem>
+              <ToggleGroupItem value="first" className="text-xs">
+                1–15
+              </ToggleGroupItem>
+              <ToggleGroupItem value="second" className="text-xs">
+                16–{dim}
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+
           <Label className="flex cursor-pointer items-start gap-2.5 font-normal">
             <Checkbox
               checked={withHeader}
@@ -162,6 +201,7 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
               <span className="text-sm font-medium">Добавить шапку</span>
               <span className="block text-xs text-muted-foreground">
                 Имя, месяц и итоговые часы первой строкой
+                {period === 'month' && ' + разбивка по половинам'}
               </span>
             </span>
           </Label>
@@ -193,7 +233,8 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
           </div>
 
           <p className="text-xs text-muted-foreground">
-            {st.workDays} раб. дн. · {fmtNum(st.totalHours)} ч
+            {periodLabel[0].toUpperCase()}
+            {periodLabel.slice(1)}: {st.workDays} раб. дн. · {fmtNum(st.totalHours)} ч
             {st.salary !== null && ` · ${fmtMoney(st.salary)}`} · незаполненные дни уходят как
             «Выходной»
           </p>

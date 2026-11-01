@@ -1,7 +1,7 @@
 // Вспомогательные функции для тестов
 import type { Profile } from '../src/lib/tabel'
 
-export { buildExport, exportLine, dayHours } from '../src/lib/tabel'
+export { buildExport, exportLine, dayHours, halfRange, halfStats, periodStats } from '../src/lib/tabel'
 
 export function makeTestProfile(): Profile {
   return {
