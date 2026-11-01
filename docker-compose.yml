@@ -3,6 +3,8 @@
 #   docker compose up -d --build     # собрать и запустить
 #   docker compose logs -f           # смотреть логи
 #   docker compose down              # остановить (данные останутся в томе)
+#   docker compose build --no-cache  # пересборка с нуля (если образ собран
+#                                    # старым Dockerfile и падал на миграциях)
 #
 # Данные (SQLite) лежат в именованном томе tabel-data и переживают
 # пересоздание контейнера и обновление образа.

@@ -68,9 +68,22 @@ R=$(curl -s -X DELETE $B/api/profiles/api-test-profile | jq -r .ok)
 check "$R" "true" "DELETE /api/profiles/:id"
 
 echo "── 10. восстановление снимка (импорт)"
-R=$(curl -s -X POST $B/api/import -H 'Content-Type: application/json' \
-  -d "{\"profiles\":$(jq -c '.profiles' /tmp/state-before.json)}" | jq -r '.profiles')
-check "$R" "$BEFORE_PROFILES" "POST /api/import → профили восстановлены"
+if [ "$BEFORE_PROFILES" -gt 0 ]; then
+  R=$(curl -s -X POST $B/api/import -H 'Content-Type: application/json' \
+    -d "{\"profiles\":$(jq -c '.profiles' /tmp/state-before.json)}" | jq -r '.profiles')
+  check "$R" "$BEFORE_PROFILES" "POST /api/import → профили восстановлены"
+else
+  # база была пуста: импорт пустого массива должен отклоняться (защита от
+  # случайной очистки), а непустой импорт — работать; после проверки чистим
+  R=$(curl -s -o /dev/null -w "%{http_code}" -X POST $B/api/import \
+    -H 'Content-Type: application/json' -d '{"profiles":[]}')
+  check "$R" "400" "импорт пустого массива → 400 (защита от очистки)"
+  R=$(curl -s -X POST $B/api/import -H 'Content-Type: application/json' \
+    -d '{"profiles":[{"id":"tmp-import-check","name":"Времянка","months":{"2026-10":{"16":{"off":false,"start":"09:00","end":"18:00","lunch":true,"lunchMin":60,"place":"Склад"}}}}]}' \
+    | jq -r '.profiles')
+  check "$R" "1" "POST /api/import → непустой импорт работает"
+  curl -s -X DELETE $B/api/profiles/tmp-import-check > /dev/null
+fi
 
 echo "── 11. итоговое состояние совпадает со снимком"
 curl -s $B/api/state > /tmp/state-after.json
