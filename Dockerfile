@@ -1,22 +1,29 @@
 # syntax=docker/dockerfile:1
 # ─────────────────────────────────────────────────────────────────────────────
-# Табель — кастомный Dockerfile (v4).
+# Табель — кастомный Dockerfile (v5).
 #
 # Стадии:
 #   deps    — зависимости ставит bun строго по bun.lock (версия запинена);
-#   builder — prisma generate + next build (.next/standalone) + отдельное
-#             npm-дерево с Prisma CLI для миграций;
-#   runner  — рантайм: Next.js standalone + npm-дерево Prisma CLI.
+#   builder — prisma generate + next build → автономная сборка .next/standalone;
+#   runner  — ТОЛЬКО автономный вывод Next.js + папка prisma со схемой,
+#             миграциями и скриптом применения миграций.
 #
-# ПОЧЕМУ CLI СТАВИТСЯ ОТДЕЛЬНЫМ npm-ДЕРЕВОМ (v3 → v4):
-#   Standalone-сборка Next.js кладёт в образ только @prisma/client, а самому
-#   `prisma migrate deploy` нужен CLI со своими зависимостями (effect, c12…).
-#   В v3 эти пакеты копировались списком из bun-раскладки — и на некоторых
-#   билдерах (классический docker builder) список терялся. Теперь CLI
-#   ставится npm-ом в отдельную папку как самодостаточное дерево (реальные
-#   файлы, классическая hoisted-раскладка) и копируется ОДНОЙ строкой COPY.
-#   npm-дерево гарантированно резолвится node-ом, а движки скачиваются
-#   прямо под платформу рантайма (node:22-bookworm-slim).
+# ГЛАВНОЕ ОТЛИЧИЕ ОТ ПРЕДЫДУЩИХ ВЕРСИЙ:
+#   В рантайме больше НЕТ Prisma CLI. Раньше `prisma migrate deploy`
+#   требовал CLI с его зависимостями (effect, c12, consola…) — и их
+#   копирование в образ то и дело терялось на билдерах хостингов
+#   (ошибки вида "Cannot find module '…/prisma/build/index.js'" и
+#   "Cannot find module 'effect'").
+#
+#   Теперь миграции применяет prisma/migrate.js — маленький скрипт на
+#   чистом Node, который работает через УЖЕ СОБРАННЫЙ PrismaClient из
+#   автономной сборки. А значит:
+#     • нечего дополнительно копировать — нечему теряться;
+#     • у миграций и сервера одно условие работоспособности: если сервер
+#       вообще способен стартовать, миграции тоже применятся.
+#   Формат таблицы _prisma_migrations совпадает с Prisma CLI байт-в-байт
+#   (проверено двусторонними тестами), поэтому штатный `prisma migrate
+#   deploy` рядом с этим скриптом корректно видит все применённые миграции.
 #
 # База (SQLite) живёт в томе /data и переживает пересоздание контейнера.
 # Сборка:  docker build -t tabel .
@@ -25,8 +32,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── 1/3 · зависимости ───────────────────────────────────────────────────────
-# версия bun запинена ради воспроизводимости (плавающий тег :1 может
-# изменить поведение установки)
+# версия bun запинена ради воспроизводимости
 FROM oven/bun:1.4.4 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -44,17 +50,7 @@ ENV DATABASE_URL="file:/tmp/build.db"
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate \
- && npx next build \
-# ── отдельное npm-дерево с Prisma CLI (для миграций при старте) ────────────
-# версия читается из установленного дерева, так что CLI всегда совпадает
-# с @prisma/client из bun.lock
- && PRISMA_VER="$(node -p "require('./node_modules/prisma/package.json').version")" \
- && echo "prisma CLI: ${PRISMA_VER}" \
- && mkdir -p /cli \
- && printf '{"name":"prisma-cli","private":true}' > /cli/package.json \
- && cd /cli \
- && npm install --no-audit --no-fund --loglevel=error "prisma@${PRISMA_VER}" \
- && node /cli/node_modules/prisma/build/index.js --version
+ && npx next build
 
 # ─── 3/3 · рантайм ───────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS runner
@@ -75,26 +71,25 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     DATABASE_URL="file:/data/tabel.db"
 
-# автономный сервер Next.js: внутри уже есть node_modules с @prisma/client
-# и сгенерированным клиентом (.prisma) с движком под эту платформу
+# Автономный сервер Next.js: внутри уже есть node_modules с @prisma/client,
+# сгенерированным клиентом (.prisma) и движком под эту платформу —
+# ровно то, что нужно и серверу, и prisma/migrate.js.
 COPY --from=builder --chown=tabel:tabel /app/.next/standalone ./
 COPY --from=builder --chown=tabel:tabel /app/.next/static ./.next/static
 COPY --from=builder --chown=tabel:tabel /app/public ./public
 
-# Prisma CLI со всеми зависимостями — ОДИН COPY целого самодостаточного
-# npm-дерева (содержимое /cli/node_modules вливается в ./node_modules)
-COPY --from=builder --chown=tabel:tabel /cli/node_modules ./node_modules
-
-# схема + миграции для prisma migrate deploy
+# схема, миграции и скрипт их применения (включая migrate.js)
 COPY --from=builder --chown=tabel:tabel /app/prisma ./prisma
 
-# ── Страховка: полная проверка ПРИ СБОРКЕ ────────────────────────────────────
-# Прогоняем настоящий migrate deploy по временной базе и требуем клиента.
-# Если что-то не так — сборка упадёт здесь с полным логом Prisma,
-# а не контейнер на проде в цикле перезапуска.
-RUN echo '[verify] prisma migrate deploy…' \
- && DATABASE_URL=file:/tmp/verify.db \
-    node ./node_modules/prisma/build/index.js migrate deploy --schema ./prisma/schema.prisma \
+# ── Страховка: полная проверка ПРИ СБОРКЕ тем же путём, что и в рантайме ─────
+# Дважды прогоняем prisma/migrate.js по временной базе: первый запуск
+# применяет миграции, второй доказывает идемпотентность. Затем проверяем
+# PrismaClient. Любая проблема уронит сборку с полным логом — а не контейнер
+# на проде в цикле перезапуска.
+RUN echo '[verify] миграции (чистая база)…' \
+ && DATABASE_URL=file:/tmp/verify.db node ./prisma/migrate.js \
+ && echo '[verify] миграции (повторный запуск)…' \
+ && DATABASE_URL=file:/tmp/verify.db node ./prisma/migrate.js \
  && echo '[verify] prisma client…' \
  && node -e "require('./node_modules/.prisma/client'); console.log('[verify] client OK')" \
  && rm -f /tmp/verify.db /tmp/verify.db-journal
