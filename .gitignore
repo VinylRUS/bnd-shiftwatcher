@@ -17,6 +17,6 @@ dev.log
 # прочее
 .DS_Store
 
-# автономная сборка (fallback для рантайма-оверлея bothost) — коммитим
-!standalone/.next/
-!standalone/.next/node_modules/
+# v7: рантайм целиком в образе (/srv/tabel) — автономная сборка
+# в репозитории больше не нужна и не коммитится
+standalone/

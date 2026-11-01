@@ -4,6 +4,8 @@
 node_modules
 .next
 out
+standalone
+data
 
 # локальная база и окружение дев-машины
 db
