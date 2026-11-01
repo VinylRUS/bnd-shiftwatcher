@@ -1,0 +1,18 @@
+# зависимости и артефакты сборки
+node_modules/
+.next/
+out/
+tsconfig.tsbuildinfo
+
+# локальная база и окружение
+db/
+*.db
+*.db-journal
+.env
+.env.*
+!.env.example
+dev.log
+*.log
+
+# прочее
+.DS_Store

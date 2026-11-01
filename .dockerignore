@@ -1,0 +1,35 @@
+# В образ не должно попадать ничего лишнего — контекст сборки держим чистым.
+
+# зависимости и артефакты сборки (ставятся/собираются внутри образа)
+node_modules
+.next
+out
+
+# локальная база и окружение дев-машины
+db
+.env
+.env.*
+*.log
+dev.log
+
+# данные песочницы и вспомогательные папки проекта
+download
+tests
+examples
+mini-services
+.zscripts
+.agent-ctx
+scripts
+git
+
+# файлы самого docker-окружения (в контексте не нужны)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# прочее
+Caddyfile
+README.md
+*.zip
+*.db
+*.md
