@@ -1,0 +1,25 @@
+# Табель — запуск через Docker Compose.
+#
+#   docker compose up -d --build     # собрать и запустить
+#   docker compose logs -f           # смотреть логи
+#   docker compose down              # остановить (данные останутся в томе)
+#
+# Данные (SQLite) лежат в именованном томе tabel-data и переживают
+# пересоздание контейнера и обновление образа.
+
+services:
+  tabel:
+    build: .
+    image: tabel:latest
+    container_name: tabel
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # слева — порт на сервере (можно сменить на 8080:3000)
+    environment:
+      DATABASE_URL: file:/data/tabel.db
+      # PORT: 3000
+    volumes:
+      - tabel-data:/data
+
+volumes:
+  tabel-data:

@@ -1,0 +1,257 @@
+'use client'
+
+import { useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { Copy, DatabaseBackup, Download, FileText, RotateCcw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import { Separator } from '@/components/ui/separator'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { useTabel } from '@/lib/store'
+import type { Profile } from '@/lib/tabel'
+import { buildExport, fmtMoney, fmtNum, monthStats } from '@/lib/tabel'
+
+/** копирование с запасным вариантом для сайтов без https (Clipboard API недоступен) */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
+
+function downloadBlob(filename: string, text: string, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
+
+function safeName(s: string): string {
+  return (
+    s
+      .trim()
+      .replace(/[^\wа-яёА-ЯЁ-]+/gi, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+      .slice(0, 30) || 'profil'
+  )
+}
+
+export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: number }) {
+  const [withHeader, setWithHeader] = useState(false)
+  const [pending, setPending] = useState<{ profiles: Profile[]; activeId: string; date?: string } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const replaceAll = useTabel((s) => s.replaceAll)
+
+  const st = monthStats(profile, y, m)
+  const text = buildExport(profile, y, m, withHeader)
+  const lines = text.split('\n')
+  const mm = String(m + 1).padStart(2, '0')
+
+  const onCopy = async () => {
+    const ok = await copyText(text)
+    if (ok) toast.success('Скопировано', { description: 'Вставьте в сообщение для HR' })
+    else toast.error('Не удалось скопировать', { description: 'Скачайте файл .txt и отправьте его' })
+  }
+
+  const onDownloadTxt = () => {
+    downloadBlob(`Табель_${safeName(profile.name)}_${y}-${mm}.txt`, text)
+    toast.success('Файл сохранён', { description: `Табель_${safeName(profile.name)}_${y}-${mm}.txt` })
+  }
+
+  const onBackup = () => {
+    const { profiles, activeId } = useTabel.getState()
+    const data = JSON.stringify(
+      { app: 'tabel', version: 1, exportedAt: new Date().toISOString(), profiles, activeId },
+      null,
+      2,
+    )
+    downloadBlob(`tabel-backup-${y}-${mm}.json`, data, 'application/json;charset=utf-8')
+    toast.success('Резервная копия сохранена')
+  }
+
+  const onFileChosen = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      const parsed = JSON.parse(await file.text())
+      const ok =
+        parsed &&
+        Array.isArray(parsed.profiles) &&
+        parsed.profiles.length > 0 &&
+        parsed.profiles.every(
+          (p: Profile) => p && typeof p.id === 'string' && typeof p.name === 'string' && p.months && typeof p.months === 'object',
+        )
+      if (!ok) throw new Error('bad')
+      setPending({
+        profiles: parsed.profiles,
+        activeId: parsed.activeId ?? parsed.profiles[0].id,
+        date: parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString('ru-RU') : undefined,
+      })
+    } catch {
+      toast.error('Не удалось прочитать файл', { description: 'Проверьте, что это резервная копия Табеля (.json)' })
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const applyImport = async () => {
+    if (!pending) return
+    const ok = await replaceAll({ profiles: pending.profiles, activeId: pending.activeId })
+    if (ok) {
+      toast.success('Данные восстановлены', {
+        description: `Профилей: ${pending.profiles.length}`,
+      })
+    }
+    setPending(null)
+  }
+
+  return (
+    <>
+      <Card className="gap-0 overflow-hidden py-0 lg:sticky lg:top-20">
+        <CardHeader className="border-b py-4">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <span className="flex size-7 items-center justify-center rounded-lg bg-emerald-500/10">
+              <FileText className="size-4 text-emerald-600" />
+            </span>
+            Выгрузка для HR
+          </CardTitle>
+          <CardDescription>
+            Каждый день месяца отдельной строкой — можно копировать или скачать файлом
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-3 p-4">
+          <Label className="flex cursor-pointer items-start gap-2.5 font-normal">
+            <Checkbox
+              checked={withHeader}
+              onCheckedChange={(v) => setWithHeader(v === true)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="text-sm font-medium">Добавить шапку</span>
+              <span className="block text-xs text-muted-foreground">
+                Имя, месяц и итоговые часы первой строкой
+              </span>
+            </span>
+          </Label>
+
+          <div
+            className="pretty-scroll max-h-72 overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-[11.5px] leading-relaxed text-zinc-100 shadow-inner dark:bg-zinc-900"
+            aria-label="Предпросмотр выгрузки"
+          >
+            {lines.map((line, i) => {
+              if (line === '') return <div key={i} className="h-2" aria-hidden />
+              const parts = line.split('  ')
+              if (parts.length < 2) {
+                return (
+                  <div key={i} className="font-semibold text-amber-300/90">
+                    {line}
+                  </div>
+                )
+              }
+              const [date, ...rest] = parts
+              const tail = rest.join('  ')
+              return (
+                <div key={i} className="whitespace-pre">
+                  <span className="text-emerald-400">{date}</span>
+                  {'  '}
+                  <span className={tail === 'Выходной' ? 'text-zinc-500' : undefined}>{tail}</span>
+                </div>
+              )
+            })}
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            {st.workDays} раб. дн. · {fmtNum(st.totalHours)} ч
+            {st.salary !== null && ` · ${fmtMoney(st.salary)}`} · незаполненные дни уходят как
+            «Выходной»
+          </p>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Button onClick={onCopy}>
+              <Copy /> Копировать
+            </Button>
+            <Button variant="outline" onClick={onDownloadTxt}>
+              <Download /> .txt
+            </Button>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <DatabaseBackup className="size-4 text-muted-foreground" />
+              Резервная копия
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Табели хранятся на сервере. Копия пригодится, чтобы перенести данные
+              на другой сервер или подстраховаться перед обновлением.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" size="sm" onClick={onBackup}>
+                <Download /> Сохранить
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
+                <RotateCcw /> Восстановить
+              </Button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => onFileChosen(e.target.files?.[0])}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <AlertDialog open={!!pending} onOpenChange={(o) => !o && setPending(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Восстановить резервную копию?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Текущие данные будут заменены: профилей — {pending?.profiles.length}
+              {pending?.date ? `, копия от ${pending.date}` : ''}. Это действие нельзя отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction onClick={applyImport}>Восстановить</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}

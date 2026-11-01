@@ -1,0 +1,52 @@
+// Схема данных Табеля.
+// Профили (сотрудники) и записи по дням. База — SQLite, файл задаётся
+// переменной окружения DATABASE_URL (в Docker — том /data).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Profile {
+  id         String   @id
+  name       String
+  /// ставка ₽ за час; null — не задана
+  rate       Float?
+  defStart   String   @default("09:00")
+  defEnd     String   @default("18:00")
+  defLunch   Boolean  @default(true)
+  defLunchMin Int     @default(60)
+  defPlace   String   @default("Склад")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  days       DayRow[]
+
+  @@index([createdAt])
+}
+
+model DayRow {
+  id        String  @id @default(uuid())
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  /// дата дня в формате YYYY-MM-DD
+  date      String
+  /// true — выходной
+  off       Boolean @default(false)
+  /// "09:00"
+  startTime String  @default("")
+  /// "18:00"
+  endTime   String  @default("")
+  /// есть обед
+  lunch     Boolean @default(false)
+  /// длительность обеда, минут
+  lunchMin  Int     @default(0)
+  /// место работы, напр. "Склад"
+  place     String  @default("")
+
+  @@unique([profileId, date])
+  @@index([profileId, date])
+}
