@@ -28,6 +28,9 @@ docker-compose.yml
 .dockerignore
 
 # прочее
+.git
+.gitignore
+.DS_Store
 Caddyfile
 README.md
 *.zip

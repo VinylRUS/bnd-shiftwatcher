@@ -1,29 +1,33 @@
 # syntax=docker/dockerfile:1
 # ─────────────────────────────────────────────────────────────────────────────
-# Табель — кастомный Dockerfile (v3, исправлена доставка Prisma CLI в рантайм).
+# Табель — кастомный Dockerfile (v4).
 #
 # Стадии:
-#   deps    — зависимости ставит bun строго по bun.lock (быстро и воспроизводимо);
-#   builder — prisma generate + next build, автономная сборка (.next/standalone);
-#   runner  — минимальный рантайм: Next.js standalone + Prisma CLI со ВСЕМИ его
-#             зависимостями, чтобы контейнер сам применял миграции при старте.
+#   deps    — зависимости ставит bun строго по bun.lock (версия запинена);
+#   builder — prisma generate + next build (.next/standalone) + отдельное
+#             npm-дерево с Prisma CLI для миграций;
+#   runner  — рантайм: Next.js standalone + npm-дерево Prisma CLI.
+#
+# ПОЧЕМУ CLI СТАВИТСЯ ОТДЕЛЬНЫМ npm-ДЕРЕВОМ (v3 → v4):
+#   Standalone-сборка Next.js кладёт в образ только @prisma/client, а самому
+#   `prisma migrate deploy` нужен CLI со своими зависимостями (effect, c12…).
+#   В v3 эти пакеты копировались списком из bun-раскладки — и на некоторых
+#   билдерах (классический docker builder) список терялся. Теперь CLI
+#   ставится npm-ом в отдельную папку как самодостаточное дерево (реальные
+#   файлы, классическая hoisted-раскладка) и копируется ОДНОЙ строкой COPY.
+#   npm-дерево гарантированно резолвится node-ом, а движки скачиваются
+#   прямо под платформу рантайма (node:22-bookworm-slim).
 #
 # База (SQLite) живёт в томе /data и переживает пересоздание контейнера.
 # Сборка:  docker build -t tabel .
 # Запуск:  docker run -p 3000:3000 -v tabel-data:/data tabel
 #          (или просто: docker compose up -d --build)
-#
-# ВАЖНО (для тех, у кого контейнер падал с "Cannot find module
-# .../node_modules/prisma/build/index.js"): это старый образ без Prisma CLI.
-# Пересоберите без кэша:
-#   docker compose down && docker compose build --no-cache && docker compose up -d
-# Данные в томе tabel-data при этом не теряются.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── 1/3 · зависимости ───────────────────────────────────────────────────────
-# oven/bun — дебиан-образ, та же платформа (glibc/openssl 3), что и у рантайма,
-# поэтому скачанные Prisma-движки подойдут и для node:22-bookworm-slim.
-FROM oven/bun:1 AS deps
+# версия bun запинена ради воспроизводимости (плавающий тег :1 может
+# изменить поведение установки)
+FROM oven/bun:1.4.4 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 # схема нужна постинстоллу @prisma/client (prisma generate)
@@ -40,7 +44,17 @@ ENV DATABASE_URL="file:/tmp/build.db"
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate \
- && npx next build
+ && npx next build \
+# ── отдельное npm-дерево с Prisma CLI (для миграций при старте) ────────────
+# версия читается из установленного дерева, так что CLI всегда совпадает
+# с @prisma/client из bun.lock
+ && PRISMA_VER="$(node -p "require('./node_modules/prisma/package.json').version")" \
+ && echo "prisma CLI: ${PRISMA_VER}" \
+ && mkdir -p /cli \
+ && printf '{"name":"prisma-cli","private":true}' > /cli/package.json \
+ && cd /cli \
+ && npm install --no-audit --no-fund --loglevel=error "prisma@${PRISMA_VER}" \
+ && node /cli/node_modules/prisma/build/index.js --version
 
 # ─── 3/3 · рантайм ───────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS runner
@@ -61,42 +75,29 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     DATABASE_URL="file:/data/tabel.db"
 
-# автономный сервер Next.js + статика и публичные файлы
+# автономный сервер Next.js: внутри уже есть node_modules с @prisma/client
+# и сгенерированным клиентом (.prisma) с движком под эту платформу
 COPY --from=builder --chown=tabel:tabel /app/.next/standalone ./
 COPY --from=builder --chown=tabel:tabel /app/.next/static ./.next/static
 COPY --from=builder --chown=tabel:tabel /app/public ./public
 
-# ── Prisma CLI для миграций при старте ───────────────────────────────────────
-# Next.js standalone кладёт в node_modules только клиент (@prisma/client) —
-# сам CLI (node_modules/prisma) в автономную сборку НЕ попадает, поэтому тащим
-# его вручную: сам пакет, его скоупы и ПОЛНОЕ замыкание зависимостей
-# (prisma@6.19.2 → @prisma/config → c12/effect/…; список проверен скриптом
-# scripts/prisma-cli-deps.py и smoke-тестом раннера локально).
-COPY --from=builder --chown=tabel:tabel /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder --chown=tabel:tabel /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder --chown=tabel:tabel /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=tabel:tabel /app/node_modules/@standard-schema ./node_modules/@standard-schema
-COPY --from=builder --chown=tabel:tabel \
-      /app/node_modules/c12 /app/node_modules/chokidar /app/node_modules/citty \
-      /app/node_modules/confbox /app/node_modules/consola /app/node_modules/deepmerge-ts \
-      /app/node_modules/defu /app/node_modules/destr /app/node_modules/dotenv \
-      /app/node_modules/effect /app/node_modules/empathic /app/node_modules/exsolve \
-      /app/node_modules/fast-check /app/node_modules/giget /app/node_modules/jiti \
-      /app/node_modules/node-fetch-native /app/node_modules/nypm /app/node_modules/ohash \
-      /app/node_modules/pathe /app/node_modules/perfect-debounce /app/node_modules/pkg-types \
-      /app/node_modules/pure-rand /app/node_modules/rc9 /app/node_modules/readdirp \
-      /app/node_modules/tinyexec /app/node_modules/typescript \
-      ./node_modules/
+# Prisma CLI со всеми зависимостями — ОДИН COPY целого самодостаточного
+# npm-дерева (содержимое /cli/node_modules вливается в ./node_modules)
+COPY --from=builder --chown=tabel:tabel /cli/node_modules ./node_modules
 
 # схема + миграции для prisma migrate deploy
 COPY --from=builder --chown=tabel:tabel /app/prisma ./prisma
 
-# ── Страховка: проверяем CLI ПРИ СБОРКЕ ──────────────────────────────────────
-# Если после обновления зависимостей какого-то пакета перестанет хватать —
-# сборка упадёт здесь с понятной ошибкой, а не контейнер на проде
-# в бесконечном цикле перезапуска.
-RUN node ./node_modules/prisma/build/index.js --version \
- && node -e "require('./node_modules/.prisma/client'); console.log('prisma client OK')"
+# ── Страховка: полная проверка ПРИ СБОРКЕ ────────────────────────────────────
+# Прогоняем настоящий migrate deploy по временной базе и требуем клиента.
+# Если что-то не так — сборка упадёт здесь с полным логом Prisma,
+# а не контейнер на проде в цикле перезапуска.
+RUN echo '[verify] prisma migrate deploy…' \
+ && DATABASE_URL=file:/tmp/verify.db \
+    node ./node_modules/prisma/build/index.js migrate deploy --schema ./prisma/schema.prisma \
+ && echo '[verify] prisma client…' \
+ && node -e "require('./node_modules/.prisma/client'); console.log('[verify] client OK')" \
+ && rm -f /tmp/verify.db /tmp/verify.db-journal
 
 # точка входа: применить миграции и запустить сервер
 COPY --chown=tabel:tabel docker-entrypoint.sh ./
