@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 # ─────────────────────────────────────────────────────────────────────────────
-# Табель — кастомный Dockerfile (v5).
+# Табель — кастомный Dockerfile (v6).
 #
 # Стадии:
 #   deps    — зависимости ставит bun строго по bun.lock (версия запинена);
-#   builder — prisma generate + next build → автономная сборка .next/standalone;
+#   builder — prisma generate + next build → автономная сборка .next/standalone
+#             (openssl ставится и здесь — иначе Prisma качает не тот движок);
 #   runner  — ТОЛЬКО автономный вывод Next.js + папка prisma со схемой,
 #             миграциями и скриптом применения миграций.
 #
@@ -43,6 +44,11 @@ RUN bun install --frozen-lockfile
 # ─── 2/3 · сборка ────────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
+# openssl нужен на этапе prisma generate: без него Prisma не может определить
+# версию libssl и скачивает движок под openssl-1.1.x, а рантайм у нас на 3.0.x
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl \
+ && rm -rf /var/lib/apt/lists/*
 ENV NEXT_TELEMETRY_DISABLED=1
 # На этапе сборки Prisma-клиенту достаточно любого валидного пути —
 # настоящая база подключается в рантайме через том /data.
@@ -68,8 +74,9 @@ RUN apt-get update \
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0 \
-    DATABASE_URL="file:/data/tabel.db"
+    HOSTNAME=0.0.0.0
+# DATABASE_URL сознательно НЕ задаём: точка входа сама выбирает путь к базе
+# (персистентная папка платформы → том /data → рядом с приложением)
 
 # Автономный сервер Next.js: внутри уже есть node_modules с @prisma/client,
 # сгенерированным клиентом (.prisma) и движком под эту платформу —
@@ -102,9 +109,11 @@ USER tabel
 VOLUME /data
 EXPOSE 3000
 
-# живость проверяем внутренним node (curl/wget в slim-образе нет)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+# живость проверяем внутренним node (curl/wget в slim-образе нет);
+# start-period щедрый — точка входа может ждать досинхронизацию файлов платформы
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-ENTRYPOINT ["./docker-entrypoint.sh"]
+# sh — чтобы работало даже если платформа сняла бит исполнения при копировании
+ENTRYPOINT ["sh", "./docker-entrypoint.sh"]
 CMD ["node", "server.js"]

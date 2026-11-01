@@ -42,7 +42,33 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-Данные в томе `tabel-data` при этом не теряются.
+Данные в томе `tabel-data` при этом не теряются. Для Git-деплой платформ
+(bothost и подобных) см. следующую секцию — там свой механизм запуска.
+
+## Запуск на bothost и подобных Git-деплой платформах
+
+Платформа собирает образ по Dockerfile, но в рантайме кладёт в /app файлы
+репозитория и node_modules из сборки — файлы образа (`server.js`, `.next`)
+при этом могут отсутствовать или появляться с задержкой. Приложение к
+такому рантайму готово:
+
+- точка входа **ждёт** нужные файлы (до 90 с), а не падает сразу;
+- если `server.js`/`.next` отсутствуют — разворачивает их из fallback-копии
+  `standalone/`, лежащей в репозитории (образ при этом всегда важнее:
+  свежая сборка из Dockerfile не перекрывается);
+- путь к базе выбирается автоматически: персистентная папка платформы
+  (`data/` рядом с приложением) → том `/data` → рядом с приложением.
+
+После правок кода обновите и fallback-копию:
+
+```bash
+bun install && bunx prisma generate && bun run build
+rm -rf standalone && mkdir standalone
+cp -a .next/standalone/server.js standalone/
+cp -a .next/standalone/.next standalone/.next
+sed -i "s|$(pwd)|/app|g" standalone/.next/required-server-files.json
+git add standalone && git commit -m "build: обновить standalone"
+```
 
 ## Формат выгрузки для HR
 
@@ -103,6 +129,7 @@ bun scripts/test-export.ts       # формат выгрузки для HR
 | `prisma/` | схема данных и миграции |
 | `Dockerfile` | трёхстадийная сборка (bun deps → build → runtime без CLI) |
 | `prisma/migrate.js` | применение миграций без Prisma CLI |
+| `standalone/` | fallback-копия автономной сборки для рантайма-оверлея платформы |
 | `docker-entrypoint.sh` | миграции + старт сервера |
 
 ## Заметки

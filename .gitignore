@@ -16,3 +16,7 @@ dev.log
 
 # прочее
 .DS_Store
+
+# автономная сборка (fallback для рантайма-оверлея bothost) — коммитим
+!standalone/.next/
+!standalone/.next/node_modules/

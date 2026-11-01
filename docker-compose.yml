@@ -18,7 +18,10 @@ services:
     ports:
       - "3000:3000" # слева — порт на сервере (можно сменить на 8080:3000)
     environment:
-      DATABASE_URL: file:/data/tabel.db
+      # DATABASE_URL не задаём: точка входа сама выберет путь к базе
+      # (персистентная папка платформы → том /data → рядом с приложением).
+      # При необходимости можно задать явно, например:
+      # DATABASE_URL: file:/data/tabel.db
       # PORT: 3000
     volumes:
       - tabel-data:/data
