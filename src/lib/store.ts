@@ -12,7 +12,7 @@
 import { create } from 'zustand'
 import { toast } from 'sonner'
 import type { DayEntry, Profile } from '@/lib/tabel'
-import { daysInMonth, isoWeekday } from '@/lib/tabel'
+import { daysInMonth, halfRange, isoWeekday } from '@/lib/tabel'
 
 const ACTIVE_KEY = 'tabel-active-v1'
 const LEGACY_KEY = 'tabel-v1' // старая статическая версия сайта
@@ -41,6 +41,8 @@ export type FillOptions = {
   workdays: number[]
   /** true — не трогать уже заполненные дни */
   onlyEmpty: boolean
+  /** что заполнить: весь месяц (по умолчанию) или половина (1–15 / 16–конец) */
+  scope?: 'month' | 'first' | 'second'
   start: string
   end: string
   lunch: boolean
@@ -146,7 +148,7 @@ type TabelState = {
   clearMonth: (profileId: string, monthKey: string) => void
   /** скопировать записи прошлого месяца; возвращает число перенесённых дней */
   copyMonth: (profileId: string, fromKey: string, toKey: string) => number
-  /** заполнить месяц по шаблону; возвращает { work, off } */
+  /** заполнить месяц или половину по шаблону; возвращает { work, off } */
   fillMonth: (profileId: string, monthKey: string, opts: FillOptions) => { work: number; off: number }
   /** заменить все данные (восстановление из резервной копии) */
   replaceAll: (data: { profiles: Profile[]; activeId: string }) => Promise<boolean>
@@ -357,14 +359,29 @@ export const useTabel = create<TabelState>()((set, get) => ({
   fillMonth: (profileId, key, opts) => {
     const [y, m] = key.split('-').map(Number)
     const dim = daysInMonth(y, m - 1)
+    const scope = opts.scope ?? 'month'
+    const { from, to } =
+      scope === 'month' ? { from: 1, to: dim } : halfRange(scope === 'second' ? 2 : 1, y, m - 1)
     const work = new Set(opts.workdays)
     const p = get().profiles.find((x) => x.id === profileId)
     const existing = p?.months[key] ?? {}
-    const target: Record<string, DayEntry> = opts.onlyEmpty ? { ...existing } : {}
+    // дни вне выбранного периода не трогаем — переносим в результат как есть
+    const target: Record<string, DayEntry> = {}
+    for (let d = 1; d < from; d++) {
+      const e = existing[String(d)]
+      if (e) target[String(d)] = e
+    }
+    for (let d = to + 1; d <= dim; d++) {
+      const e = existing[String(d)]
+      if (e) target[String(d)] = e
+    }
     let nWork = 0
     let nOff = 0
-    for (let d = 1; d <= dim; d++) {
-      if (opts.onlyEmpty && existing[String(d)]) continue
+    for (let d = from; d <= to; d++) {
+      if (opts.onlyEmpty && existing[String(d)]) {
+        target[String(d)] = existing[String(d)]
+        continue
+      }
       const wd = isoWeekday(new Date(y, m - 1, d))
       if (work.has(wd)) {
         target[String(d)] = {

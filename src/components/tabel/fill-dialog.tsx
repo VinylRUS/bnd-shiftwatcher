@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { DayEntry, Profile } from '@/lib/tabel'
 import type { FillOptions } from '@/lib/store'
-import { LUNCH_OPTIONS, WD_RU, daysInMonth, isoWeekday } from '@/lib/tabel'
+import { LUNCH_OPTIONS, WD_RU, daysInMonth, halfRange, isoWeekday } from '@/lib/tabel'
 
 type Props = {
   open: boolean
@@ -47,6 +47,7 @@ function FillForm({
 }) {
   const [workdays, setWorkdays] = useState<string[]>(['0', '1', '2', '3', '4'])
   const [onlyEmpty, setOnlyEmpty] = useState(true)
+  const [scope, setScope] = useState<'month' | 'first' | 'second'>('month')
   const [start, setStart] = useState(profile.defStart)
   const [end, setEnd] = useState(profile.defEnd)
   const [lunch, setLunch] = useState(profile.defLunch)
@@ -54,11 +55,12 @@ function FillForm({
   const [place, setPlace] = useState(profile.defPlace)
 
   const dim = daysInMonth(y, m)
+  const range = scope === 'month' ? { from: 1, to: dim } : halfRange(scope === 'second' ? 2 : 1, y, m)
   const work = new Set(workdays)
   let wouldWork = 0
   let wouldOff = 0
   let skipped = 0
-  for (let d = 1; d <= dim; d++) {
+  for (let d = range.from; d <= range.to; d++) {
     if (onlyEmpty && entries[String(d)]) {
       skipped++
       continue
@@ -71,6 +73,7 @@ function FillForm({
     onFill({
       workdays: workdays.map(Number),
       onlyEmpty,
+      scope,
       start,
       end,
       lunch,
@@ -92,6 +95,28 @@ function FillForm({
       </DialogHeader>
 
       <div className="space-y-5">
+        <div className="space-y-2">
+          <Label>Что заполнить</Label>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            value={scope}
+            onValueChange={(v) => v && setScope(v as 'month' | 'first' | 'second')}
+            className="flex w-full"
+            aria-label="Период заполнения"
+          >
+            <ToggleGroupItem value="month" className="min-h-9 flex-1 text-xs">
+              Весь месяц
+            </ToggleGroupItem>
+            <ToggleGroupItem value="first" className="min-h-9 flex-1 text-xs">
+              1–15
+            </ToggleGroupItem>
+            <ToggleGroupItem value="second" className="min-h-9 flex-1 text-xs">
+              16–{dim}
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+
         <div className="space-y-2">
           <Label>Рабочие дни недели</Label>
           <ToggleGroup
@@ -135,9 +160,13 @@ function FillForm({
           <Label className="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 font-normal has-[button[data-state=checked]]:border-emerald-600">
             <RadioGroupItem value="all" className="mt-0.5" />
             <span>
-              <span className="block text-sm font-medium">Перезаписать все дни месяца</span>
+              <span className="block text-sm font-medium">
+                {scope === 'month' ? 'Перезаписать все дни месяца' : 'Перезаписать все дни половины'}
+              </span>
               <span className="block text-xs text-muted-foreground">
-                Месяц будет заполнен заново по шаблону
+                {scope === 'month'
+                  ? 'Месяц будет заполнен заново по шаблону'
+                  : 'Выбранная половина будет заполнена заново по шаблону'}
               </span>
             </span>
           </Label>
@@ -212,6 +241,7 @@ function FillForm({
           <span>
             Будет заполнено: <b>{wouldWork} раб.</b> и <b>{wouldOff} вых.</b>
             {skipped > 0 && <> · пропустим уже заполненных: {skipped}</>}
+            {scope !== 'month' && <> · другая половина не изменится</>}
           </span>
         </div>
       </div>

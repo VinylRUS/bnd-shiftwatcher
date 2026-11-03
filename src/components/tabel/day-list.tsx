@@ -1,6 +1,5 @@
 'use client'
 
-import { Fragment } from 'react'
 import { CalendarDays, MoonStar } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,11 +9,11 @@ import {
   WD_RU,
   dayHours,
   fmtLunchShort,
+  fmtMoney,
   fmtNum,
   fmtTimeShort,
   halfStats,
   isOvernight,
-  monthStats,
 } from '@/lib/tabel'
 
 type Props = {
@@ -114,53 +113,95 @@ function DayRow({
   )
 }
 
-/** полоса-разделитель половин месяца: итоги 1–15 и начало 16–конец */
-function HalfDivider({ h1, h2 }: { h1: HalfStats; h2: HalfStats }) {
+/** карточка одной половины месяца: итоги в шапке и дни своего диапазона */
+function HalfSection({
+  h,
+  entries,
+  y,
+  m,
+  todayDay,
+  onEditDay,
+}: {
+  h: HalfStats
+  entries: Record<string, DayEntry>
+  y: number
+  m: number
+  todayDay: number | null
+  onEditDay: (day: number) => void
+}) {
+  const isCurrentHalf = todayDay !== null && todayDay >= h.from && todayDay <= h.to
+  const days = Array.from({ length: h.to - h.from + 1 }, (_, i) => h.from + i)
+
   return (
-    <div
-      className="sticky top-0 z-10 flex items-center gap-2.5 bg-muted px-4 py-1.5"
-      role="separator"
-      aria-label={`Граница половин месяца: 1–${h1.to} и ${h2.from}–${h2.to}`}
-    >
-      <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
-        1-я половина · {fmtNum(h1.totalHours)} ч
-      </span>
-      <span className="h-px flex-1 bg-border" aria-hidden />
-      <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
-        2-я половина ({h2.from}–{h2.to}) · {fmtNum(h2.totalHours)} ч
-      </span>
-    </div>
+    <Card className="gap-0 overflow-hidden py-0">
+      <CardHeader className="border-b py-4">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+          <CalendarDays className="size-4.5 text-emerald-600" />
+          {h.half === 1 ? '1-я половина' : '2-я половина'}
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums',
+              h.half === 1
+                ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                : 'bg-sky-500/10 text-sky-700 dark:text-sky-400',
+            )}
+          >
+            {h.from}–{h.to}
+          </span>
+          {isCurrentHalf && (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+              текущая
+            </span>
+          )}
+        </CardTitle>
+        <CardDescription>
+          {h.workDays > 0 ? (
+            <>
+              {h.workDays} рабочих · {fmtNum(h.totalHours)} ч
+              {h.salary !== null ? ` · ${fmtMoney(h.salary)}` : ''}
+            </>
+          ) : (
+            <>Рабочих дней пока нет</>
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="divide-y">
+          {days.map((d) => (
+            <DayRow
+              key={d}
+              d={d}
+              y={y}
+              m={m}
+              entry={entries[String(d)]}
+              isToday={todayDay === d}
+              onEdit={() => onEditDay(d)}
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
 export function DayList({ profile, y, m, today, onEditDay, onFillClick }: Props) {
   const entries = profile.months[`${y}-${String(m + 1).padStart(2, '0')}`] ?? {}
-  const st = monthStats(profile, y, m)
   const [h1, h2] = halfStats(profile, y, m)
-  const dim = st.days
   const filled = Object.keys(entries).length
-  const isCurrentMonth =
-    today.getFullYear() === y && today.getMonth() === m
+  const isCurrentMonth = today.getFullYear() === y && today.getMonth() === m
+  const todayDay = isCurrentMonth ? today.getDate() : null
 
-  return (
-    <Card className="gap-0 overflow-hidden py-0">
-      <CardHeader className="border-b py-4">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <CalendarDays className="size-4.5 text-emerald-600" /> Дни месяца
-        </CardTitle>
-        <CardDescription>
-          {st.workDays > 0 ? (
-            <>
-              {st.workDays} рабочих · {fmtNum(st.totalHours)} ч всего
-            </>
-          ) : (
-            <>Заполненных дней пока нет</>
-          )}
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="p-0">
-        {filled === 0 ? (
+  // пустой месяц — одна карточка с предложением заполнить по шаблону
+  if (filled === 0) {
+    return (
+      <Card className="gap-0 overflow-hidden py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <CalendarDays className="size-4.5 text-emerald-600" /> Дни месяца
+          </CardTitle>
+          <CardDescription>Заполненных дней пока нет</CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
           <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
             <div className="flex size-12 items-center justify-center rounded-2xl bg-emerald-500/10">
               <CalendarDays className="size-6 text-emerald-600" />
@@ -173,24 +214,16 @@ export function DayList({ profile, y, m, today, onEditDay, onFillClick }: Props)
             </div>
             <Button onClick={onFillClick}>Заполнить по шаблону</Button>
           </div>
-        ) : (
-          <div className="pretty-scroll max-h-[560px] divide-y overflow-y-auto">
-            {Array.from({ length: dim }, (_, i) => i + 1).map((d) => (
-              <Fragment key={d}>
-                {d === 16 && <HalfDivider h1={h1} h2={h2} />}
-                <DayRow
-                  d={d}
-                  y={y}
-                  m={m}
-                  entry={entries[String(d)]}
-                  isToday={isCurrentMonth && today.getDate() === d}
-                  onEdit={() => onEditDay(d)}
-                />
-              </Fragment>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // табель разделён на два полумесяца: 1–15 и 16–конец месяца
+  return (
+    <div className="space-y-5">
+      <HalfSection h={h1} entries={entries} y={y} m={m} todayDay={todayDay} onEditDay={onEditDay} />
+      <HalfSection h={h2} entries={entries} y={y} m={m} todayDay={todayDay} onEditDay={onEditDay} />
+    </div>
   )
 }

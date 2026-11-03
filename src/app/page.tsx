@@ -137,9 +137,16 @@ export default function Home() {
 
   const handleFill = (opts: FillOptions) => {
     const res = fillMonth(profile.id, key, opts)
-    toast.success('Месяц заполнен', {
-      description: `Рабочих: ${res.work} · выходных: ${res.off}`,
-    })
+    toast.success(
+      opts.scope === 'first'
+        ? 'Первая половина заполнена'
+        : opts.scope === 'second'
+          ? 'Вторая половина заполнена'
+          : 'Месяц заполнен',
+      {
+        description: `Рабочих: ${res.work} · выходных: ${res.off}`,
+      },
+    )
   }
 
   const handleCopyPrev = () => {
