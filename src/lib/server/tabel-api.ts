@@ -34,17 +34,6 @@ export const monthDaysSchema = z.record(
   dayEntrySchema,
 )
 
-export const profileFieldsSchema = z.object({
-  id: z.string().max(64).optional(),
-  name: z.string().trim().min(1, 'Имя не может быть пустым').max(60),
-  rate: z.number().nullable().default(null),
-  defStart: z.string().max(5).default('09:00'),
-  defEnd: z.string().max(5).default('18:00'),
-  defLunch: z.boolean().default(true),
-  defLunchMin: z.number().int().min(0).max(360).default(60),
-  defPlace: z.string().max(60).default('Склад'),
-})
-
 export const profilePatchSchema = z.object({
   name: z.string().trim().min(1, 'Имя не может быть пустым').max(60).optional(),
   rate: z.number().nullable().optional(),
@@ -55,7 +44,10 @@ export const profilePatchSchema = z.object({
   defPlace: z.string().max(60).optional(),
 })
 
-export const createProfileSchema = profileFieldsSchema
+/** создание профиля — только имя (создаёт админ, сервер генерирует id) */
+export const createProfileSchema = z.object({
+  name: z.string().trim().min(1, 'Имя не может быть пустым').max(60),
+})
 
 export const dayPutSchema = z.object({
   profileId: z.string().regex(RE_ID),

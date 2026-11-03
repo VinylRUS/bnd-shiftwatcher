@@ -1,40 +1,35 @@
 'use client'
 
-// Хранилище Табеля. Раньше данные жили в localStorage браузера — теперь
-// они на сервере (SQLite), и стор работает так:
-//   1) при загрузке страницы тянем всё состояние с /api/state;
-//   2) каждое изменение применяется мгновенно локально (оптимистично)
-//      и тут же уходит в базу фоновым запросом;
-//   3) при первом запуске пустого сервера автоматически переносим данные
-//      из старой локальной версии сайта (ключ tabel-v1);
-//   4) активный профиль — настройка конкретного браузера, живёт в localStorage.
+// Хранилище Табеля (v9 — с авторизацией по пинкоду).
+//
+//   • вход в профиль: 6-значный пин; пока пин не установлен — первый вход
+//     по имени, после которого сразу задаётся пин (/api/auth/*);
+//   • после входа сессия живёт в httpOnly-cookie, /api/state отдаёт
+//     ТОЛЬКО свой профиль (месяцы) + список профилей для админа;
+//   • правки дня/месяца применяются мгновенно локально (оптимистично)
+//     и тут же уходят в базу фоновым запросом — как и раньше;
+//   • активный профиль = профиль сессии, в localStorage больше ничего
+//     не храним.
 
 import { create } from 'zustand'
 import { toast } from 'sonner'
 import type { DayEntry, Profile } from '@/lib/tabel'
 import { daysInMonth, halfRange, isoWeekday } from '@/lib/tabel'
 
-const ACTIVE_KEY = 'tabel-active-v1'
-const LEGACY_KEY = 'tabel-v1' // старая статическая версия сайта
-
-function uid(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
-  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+/** профиль в списке админа (без месяцев) */
+export type AdminProfile = {
+  id: string
+  name: string
+  hasPin: boolean
+  rate: number | null
+  defStart: string
+  defEnd: string
+  defLunch: boolean
+  defLunchMin: number
+  defPlace: string
 }
 
-export function makeProfile(name: string): Profile {
-  return {
-    id: uid(),
-    name: name.trim() || 'Профиль',
-    rate: null,
-    defStart: '09:00',
-    defEnd: '18:00',
-    defLunch: true,
-    defLunchMin: 60,
-    defPlace: 'Склад',
-    months: {},
-  }
-}
+export type ApiResult = { ok: boolean; error?: string; code?: string; needPin?: boolean }
 
 export type FillOptions = {
   /** индексы рабочих дней недели, 0 = Пн … 6 = Вс */
@@ -50,53 +45,6 @@ export type FillOptions = {
   place: string
 }
 
-// ─── localStorage-помощники ─────────────────────────────────────────────────
-
-function readStoredActive(): string | null {
-  try {
-    return localStorage.getItem(ACTIVE_KEY)
-  } catch {
-    return null
-  }
-}
-
-function writeStoredActive(id: string) {
-  try {
-    localStorage.setItem(ACTIVE_KEY, id)
-  } catch {
-    /* приватный режим — не критично */
-  }
-}
-
-/** данные старой версии сайта (persist zustand: { state: { profiles, activeId } }) */
-function readLegacy(): { profiles: Profile[]; activeId: string } | null {
-  try {
-    const raw = localStorage.getItem(LEGACY_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as {
-      state?: { profiles?: Profile[]; activeId?: string }
-    }
-    const all = parsed?.state?.profiles
-    if (!Array.isArray(all) || all.length === 0) return null
-    const profiles = all.filter(
-      (p) =>
-        p &&
-        typeof p.id === 'string' &&
-        typeof p.name === 'string' &&
-        p.months &&
-        typeof p.months === 'object',
-    )
-    if (profiles.length === 0) return null
-    const activeId =
-      parsed.state?.activeId && profiles.some((p) => p.id === parsed.state!.activeId)
-        ? parsed.state.activeId
-        : profiles[0].id
-    return { profiles, activeId }
-  } catch {
-    return null
-  }
-}
-
 // ─── запросы к серверу ──────────────────────────────────────────────────────
 
 /** fetch с одним автоповтором (кратковременный обрыв сети не теряет правки) */
@@ -107,7 +55,7 @@ async function api(path: string, init?: RequestInit): Promise<Response> {
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     })
   let res = await doFetch()
-  if (!res.ok) {
+  if (!res.ok && res.status >= 500) {
     await new Promise((r) => setTimeout(r, 1200))
     res = await doFetch()
   }
@@ -125,40 +73,88 @@ function throwIfNotOk(res: Response) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }
 
-function profilePayload(p: Profile) {
-  const { months: _months, ...rest } = p
-  return rest
+/** POST/DELETE с человеческой ошибкой в ответе */
+async function call(path: string, method: string, body?: unknown): Promise<ApiResult> {
+  try {
+    const res = await api(path, {
+      method,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean
+      error?: string
+      code?: string
+      needPin?: boolean
+    }
+    if (!res.ok) return { ok: false, error: data.error ?? `Ошибка ${res.status}`, code: data.code }
+    return { ok: true, needPin: data.needPin }
+  } catch {
+    return { ok: false, error: 'Сервер недоступен — проверьте соединение' }
+  }
 }
 
 // ─── стор ───────────────────────────────────────────────────────────────────
 
 type TabelState = {
-  profiles: Profile[]
-  activeId: string
-  /** данные загружены с сервера */
-  loaded: boolean
-  /** сервер недоступен при загрузке */
-  offline: boolean
+  /** первый запрос /api/state завершён */
+  booted: boolean
+  /** есть сессия (вход выполнен) */
+  authed: boolean
+  /** свой профиль (с месяцами) */
+  me: Profile | null
+  isAdmin: boolean
+  /** список профилей — только для админа */
+  adminProfiles: AdminProfile[]
+  /** на сервере нет ни одного профиля → создание админа */
+  firstRun: boolean
+  /** сервер недоступен */
+  serverDown: boolean
+
   load: () => Promise<void>
-  setActive: (id: string) => void
-  addProfile: (name: string) => Promise<boolean>
+
+  // вход/выход
+  loginByPin: (pin: string) => Promise<ApiResult>
+  loginByName: (name: string) => Promise<ApiResult>
+  setupFirst: (name: string) => Promise<ApiResult>
+  setPinFor: (name: string, pin: string) => Promise<ApiResult>
+  changeOwnPin: (currentPin: string, newPin: string) => Promise<ApiResult>
+  logout: () => Promise<void>
+  /** открыть профиль по пину (переключение админом) */
+  openProfile: (id: string, pin: string) => Promise<ApiResult>
+
+  // управление профилями (админ)
+  createProfile: (name: string) => Promise<ApiResult>
+  adminUpdateProfile: (id: string, patch: Partial<Omit<AdminProfile, 'id' | 'hasPin'>>) => void
+  deleteProfile: (id: string) => Promise<ApiResult>
+  setProfilePin: (id: string, pin: string | null) => Promise<ApiResult>
+  refreshAdminProfiles: () => Promise<void>
+
+  // свои настройки (оптимистично, патч пачкой)
   updateProfile: (id: string, patch: Partial<Omit<Profile, 'id' | 'months'>>) => void
-  deleteProfile: (id: string) => void
+
+  // записи дней (свой профиль)
   setDay: (profileId: string, monthKey: string, day: number, entry: DayEntry | null) => void
   clearMonth: (profileId: string, monthKey: string) => void
   /** скопировать записи прошлого месяца; возвращает число перенесённых дней */
   copyMonth: (profileId: string, fromKey: string, toKey: string) => number
   /** заполнить месяц или половину по шаблону; возвращает { work, off } */
-  fillMonth: (profileId: string, monthKey: string, opts: FillOptions) => { work: number; off: number }
-  /** заменить все данные (восстановление из резервной копии) */
-  replaceAll: (data: { profiles: Profile[]; activeId: string }) => Promise<boolean>
+  fillMonth: (
+    profileId: string,
+    monthKey: string,
+    opts: FillOptions,
+  ) => { work: number; off: number }
+
+  /** заменить все данные (восстановление из копии, админ) */
+  replaceAll: (data: { profiles: Profile[] }) => Promise<boolean>
 }
 
-let inflight: Promise<void> | null = null
-
-/** отложенные PATCH профиля: настройки правятся инпутами, шлём пачкой */
+/** отложенные PATCH своего профиля: настройки правятся инпутами, шлём пачкой */
 const pendingProfilePatches = new Map<string, Record<string, unknown>>()
 const profileTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** отложенные PATCH чужого профиля (правки админом в диалоге профилей) */
+const pendingAdminPatches = new Map<string, Record<string, unknown>>()
+const adminTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function putMonth(profileId: string, monthKey: string, days: Record<string, DayEntry>) {
   api('/api/month', {
@@ -170,96 +166,150 @@ function putMonth(profileId: string, monthKey: string, days: Record<string, DayE
 }
 
 export const useTabel = create<TabelState>()((set, get) => ({
-  profiles: [],
-  activeId: '',
-  loaded: false,
-  offline: false,
+  booted: false,
+  authed: false,
+  me: null,
+  isAdmin: false,
+  adminProfiles: [],
+  firstRun: false,
+  serverDown: false,
 
-  load: () => {
-    if (inflight) return inflight
-    set({ offline: false })
-    inflight = (async () => {
-      try {
-        const res = await api('/api/state')
-        throwIfNotOk(res)
-        const data = (await res.json()) as { profiles?: Profile[] }
-        let profiles = Array.isArray(data.profiles) ? data.profiles : []
-
-        if (profiles.length === 0) {
-          // первый запуск пустого сервера: переносим данные старой версии, если есть
-          const legacy = readLegacy()
-          if (legacy) {
-            const r = await api('/api/import', {
-              method: 'POST',
-              body: JSON.stringify({ profiles: legacy.profiles }),
-            })
-            if (r.ok) {
-              set({ profiles: legacy.profiles, activeId: legacy.activeId, loaded: true, offline: false })
-              writeStoredActive(legacy.activeId)
-              toast.success('Данные перенесены на сервер', {
-                description: `Профилей: ${legacy.profiles.length}. Теперь табель общий и не зависит от браузера.`,
-              })
-              return
-            }
-          }
-          const p = makeProfile('Мой профиль')
-          const r = await api('/api/profiles', {
-            method: 'POST',
-            body: JSON.stringify(profilePayload(p)),
-          })
-          throwIfNotOk(r)
-          set({ profiles: [p], activeId: p.id, loaded: true, offline: false })
-          writeStoredActive(p.id)
-          return
-        }
-
-        const stored = readStoredActive()
-        const activeId = stored && profiles.some((p) => p.id === stored) ? stored : profiles[0].id
-        set({ profiles, activeId, loaded: true, offline: false })
-      } catch (err) {
-        console.error('[tabel] загрузка не удалась:', err)
-        set({ offline: true })
-      } finally {
-        inflight = null
-      }
-    })()
-    return inflight
-  },
-
-  setActive: (id) => {
-    set({ activeId: id })
-    writeStoredActive(id)
-  },
-
-  addProfile: async (name) => {
-    const p = makeProfile(name)
-    set((s) => ({ profiles: [...s.profiles, p], activeId: p.id }))
-    writeStoredActive(p.id)
+  // ─── загрузка состояния ───────────────────────────────────────────────────
+  load: async () => {
     try {
-      const res = await api('/api/profiles', {
-        method: 'POST',
-        body: JSON.stringify(profilePayload(p)),
-      })
-      throwIfNotOk(res)
-      return true
-    } catch (err) {
-      console.error('[tabel] профиль не создан:', err)
-      set((s) => {
-        const profiles = s.profiles.filter((x) => x.id !== p.id)
-        return {
-          profiles,
-          activeId: s.activeId === p.id ? (profiles[0]?.id ?? '') : s.activeId,
+      const res = await api('/api/state')
+      if (res.status === 401) {
+        // нет сессии: первый запуск или экран входа
+        let firstRun = false
+        try {
+          const rs = await api('/api/auth/state')
+          if (rs.ok) firstRun = !((await rs.json()) as { hasProfiles?: boolean }).hasProfiles
+        } catch {
+          /* не критично */
         }
+        set({
+          authed: false,
+          me: null,
+          isAdmin: false,
+          adminProfiles: [],
+          firstRun,
+          booted: true,
+          serverDown: false,
+        })
+        return
+      }
+      throwIfNotOk(res)
+      const data = (await res.json()) as {
+        profile?: Profile
+        isAdmin?: boolean
+        profiles?: AdminProfile[] | null
+      }
+      if (!data.profile) throw new Error('нет профиля в ответе')
+      set({
+        authed: true,
+        me: data.profile,
+        isAdmin: !!data.isAdmin,
+        adminProfiles: data.profiles ?? [],
+        firstRun: false,
+        booted: true,
+        serverDown: false,
       })
-      syncFail()
-      return false
+    } catch (err) {
+      console.error('[tabel] загрузка не удалась:', err)
+      set({ serverDown: true, booted: true })
     }
   },
 
-  updateProfile: (id, patch) => {
+  // ─── вход / выход ─────────────────────────────────────────────────────────
+  loginByPin: async (pin) => {
+    const r = await call('/api/auth/login', 'POST', { pin })
+    if (r.ok) await get().load()
+    return r
+  },
+
+  loginByName: async (name) => {
+    return call('/api/auth/login', 'POST', { name })
+  },
+
+  setupFirst: async (name) => {
+    return call('/api/auth/setup', 'POST', { name })
+  },
+
+  setPinFor: async (name, pin) => {
+    const r = await call('/api/auth/set-pin', 'POST', { name, pin })
+    if (r.ok) await get().load()
+    return r
+  },
+
+  changeOwnPin: async (currentPin, newPin) => {
+    const r = await call('/api/auth/pin', 'POST', { currentPin, newPin })
+    if (r.ok) {
+      toast.success('Пинкод изменён', {
+        description: 'На других устройствах попросят ввести новый пинкод.',
+      })
+    }
+    return r
+  },
+
+  logout: async () => {
+    await call('/api/auth/logout', 'POST')
+    set({ authed: false, me: null, isAdmin: false, adminProfiles: [], firstRun: false })
+  },
+
+  openProfile: async (id, pin) => {
+    const r = await call('/api/auth/login', 'POST', { profileId: id, pin })
+    if (r.ok) await get().load()
+    return r
+  },
+
+  // ─── управление профилями (админ) ─────────────────────────────────────────
+  createProfile: async (name) => {
+    const r = await call('/api/profiles', 'POST', { name })
+    if (r.ok) await get().refreshAdminProfiles()
+    return r
+  },
+
+  adminUpdateProfile: (id, patch) => {
     set((s) => ({
-      profiles: s.profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+      adminProfiles: s.adminProfiles.map((p) => (p.id === id ? { ...p, ...patch } : p)),
     }))
+    const merged = { ...(pendingAdminPatches.get(id) ?? {}), ...patch }
+    pendingAdminPatches.set(id, merged)
+    clearTimeout(adminTimers.get(id))
+    adminTimers.set(
+      id,
+      setTimeout(() => {
+        pendingAdminPatches.delete(id)
+        adminTimers.delete(id)
+        api(`/api/profiles/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(merged),
+        })
+          .then(throwIfNotOk)
+          .catch(syncFail)
+      }, 600),
+    )
+  },
+
+  deleteProfile: async (id) => {
+    const r = await call(`/api/profiles/${encodeURIComponent(id)}`, 'DELETE')
+    if (r.ok) await get().refreshAdminProfiles()
+    return r
+  },
+
+  setProfilePin: async (id, pin) => {
+    const r = await call(`/api/profiles/${encodeURIComponent(id)}/pin`, 'POST', { pin })
+    if (r.ok) await get().refreshAdminProfiles()
+    return r
+  },
+
+  refreshAdminProfiles: async () => {
+    await get().load()
+  },
+
+  // ─── свои настройки ───────────────────────────────────────────────────────
+  updateProfile: (id, patch) => {
+    set((s) => (s.me && s.me.id === id ? { me: { ...s.me, ...patch } } : s))
     const merged = { ...(pendingProfilePatches.get(id) ?? {}), ...patch }
     pendingProfilePatches.set(id, merged)
     clearTimeout(profileTimers.get(id))
@@ -278,34 +328,15 @@ export const useTabel = create<TabelState>()((set, get) => ({
     )
   },
 
-  deleteProfile: (id) => {
-    let removed: Profile | undefined
-    set((s) => {
-      if (s.profiles.length <= 1) return s
-      removed = s.profiles.find((p) => p.id === id)
-      const profiles = s.profiles.filter((p) => p.id !== id)
-      return {
-        profiles,
-        activeId: s.activeId === id ? profiles[0].id : s.activeId,
-      }
-    })
-    if (!removed) return
-    writeStoredActive(get().activeId)
-    api(`/api/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      .then(throwIfNotOk)
-      .catch(syncFail)
-  },
-
+  // ─── записи дней ──────────────────────────────────────────────────────────
   setDay: (profileId, key, day, entry) => {
-    set((s) => ({
-      profiles: s.profiles.map((p) => {
-        if (p.id !== profileId) return p
-        const month = { ...(p.months[key] ?? {}) }
-        if (entry === null) delete month[String(day)]
-        else month[String(day)] = entry
-        return { ...p, months: { ...p.months, [key]: month } }
-      }),
-    }))
+    set((s) => {
+      if (!s.me || s.me.id !== profileId) return s
+      const month = { ...(s.me.months[key] ?? {}) }
+      if (entry === null) delete month[String(day)]
+      else month[String(day)] = entry
+      return { me: { ...s.me, months: { ...s.me.months, [key]: month } } }
+    })
     api('/api/day', {
       method: 'PUT',
       body: JSON.stringify({
@@ -319,20 +350,18 @@ export const useTabel = create<TabelState>()((set, get) => ({
   },
 
   clearMonth: (profileId, key) => {
-    set((s) => ({
-      profiles: s.profiles.map((p) => {
-        if (p.id !== profileId) return p
-        const months = { ...p.months }
-        delete months[key]
-        return { ...p, months }
-      }),
-    }))
+    set((s) => {
+      if (!s.me || s.me.id !== profileId) return s
+      const months = { ...s.me.months }
+      delete months[key]
+      return { me: { ...s.me, months } }
+    })
     putMonth(profileId, key, {})
   },
 
   copyMonth: (profileId, fromKey, toKey) => {
-    const p = get().profiles.find((x) => x.id === profileId)
-    if (!p) return 0
+    const p = get().me
+    if (!p || p.id !== profileId) return 0
     const from = p.months[fromKey] ?? {}
     const [y, m] = toKey.split('-').map(Number)
     const dim = daysInMonth(y, m - 1)
@@ -346,11 +375,11 @@ export const useTabel = create<TabelState>()((set, get) => ({
       }
     }
     if (n > 0) {
-      set((s) => ({
-        profiles: s.profiles.map((x) =>
-          x.id === profileId ? { ...x, months: { ...x.months, [toKey]: target } } : x,
-        ),
-      }))
+      set((s) =>
+        s.me && s.me.id === profileId
+          ? { me: { ...s.me, months: { ...s.me.months, [toKey]: target } } }
+          : s,
+      )
       putMonth(profileId, toKey, target)
     }
     return n
@@ -363,7 +392,7 @@ export const useTabel = create<TabelState>()((set, get) => ({
     const { from, to } =
       scope === 'month' ? { from: 1, to: dim } : halfRange(scope === 'second' ? 2 : 1, y, m - 1)
     const work = new Set(opts.workdays)
-    const p = get().profiles.find((x) => x.id === profileId)
+    const p = get().me
     const existing = p?.months[key] ?? {}
     // дни вне выбранного периода не трогаем — переносим в результат как есть
     const target: Record<string, DayEntry> = {}
@@ -405,20 +434,17 @@ export const useTabel = create<TabelState>()((set, get) => ({
         nOff++
       }
     }
-    set((s) => ({
-      profiles: s.profiles.map((x) =>
-        x.id === profileId ? { ...x, months: { ...x.months, [key]: target } } : x,
-      ),
-    }))
+    set((s) =>
+      s.me && s.me.id === profileId
+        ? { me: { ...s.me, months: { ...s.me.months, [key]: target } } }
+        : s,
+    )
     putMonth(profileId, key, target)
     return { work: nWork, off: nOff }
   },
 
   replaceAll: async (data) => {
     if (!Array.isArray(data.profiles) || data.profiles.length === 0) return false
-    const activeId = data.profiles.some((p) => p.id === data.activeId)
-      ? data.activeId
-      : data.profiles[0].id
     try {
       const res = await api('/api/import', {
         method: 'POST',
@@ -431,8 +457,8 @@ export const useTabel = create<TabelState>()((set, get) => ({
         })
         return false
       }
-      set({ profiles: data.profiles, activeId })
-      writeStoredActive(activeId)
+      // свои данные могли смениться (или сессия слетела) — перезагружаем
+      await get().load()
       return true
     } catch (err) {
       console.error('[tabel] восстановление не удалось:', err)

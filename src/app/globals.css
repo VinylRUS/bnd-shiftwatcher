@@ -151,3 +151,14 @@
 .dark .pretty-scroll::-webkit-scrollbar-thumb:hover {
   background: oklch(0.985 0 0 / 0.38);
 }
+
+/* встряска при неверном пинкоде */
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-6px); }
+  40%, 60% { transform: translateX(6px); }
+}
+.animate-shake {
+  animation: shake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}

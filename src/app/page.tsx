@@ -9,6 +9,7 @@ import {
   Clock3,
   CloudOff,
   History,
+  Loader2,
   MoreHorizontal,
   RotateCcw,
   Trash2,
@@ -33,7 +34,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { HeaderBar } from '@/components/tabel/header-bar'
+import { LoginScreen } from '@/components/tabel/login-screen'
 import { ProfileDialog } from '@/components/tabel/profile-dialog'
+import { AdminDialog } from '@/components/tabel/admin-dialog'
 import { FillDialog } from '@/components/tabel/fill-dialog'
 import { DayEditDialog } from '@/components/tabel/day-edit-dialog'
 import { DayList } from '@/components/tabel/day-list'
@@ -44,15 +47,21 @@ import type { DayEntry } from '@/lib/tabel'
 import { MONTHS_RU, monthKey } from '@/lib/tabel'
 
 export default function Home() {
-  const profiles = useTabel((s) => s.profiles)
-  const loaded = useTabel((s) => s.loaded)
-  const offline = useTabel((s) => s.offline)
+  const booted = useTabel((s) => s.booted)
+  const authed = useTabel((s) => s.authed)
+  const serverDown = useTabel((s) => s.serverDown)
+  const me = useTabel((s) => s.me)
+  const isAdmin = useTabel((s) => s.isAdmin)
+  const adminProfiles = useTabel((s) => s.adminProfiles)
   const load = useTabel((s) => s.load)
-  const activeId = useTabel((s) => s.activeId)
-  const setActive = useTabel((s) => s.setActive)
-  const addProfile = useTabel((s) => s.addProfile)
+  const logout = useTabel((s) => s.logout)
+  const createProfile = useTabel((s) => s.createProfile)
   const updateProfile = useTabel((s) => s.updateProfile)
   const deleteProfile = useTabel((s) => s.deleteProfile)
+  const openProfile = useTabel((s) => s.openProfile)
+  const setProfilePin = useTabel((s) => s.setProfilePin)
+  const adminUpdateProfile = useTabel((s) => s.adminUpdateProfile)
+  const changeOwnPin = useTabel((s) => s.changeOwnPin)
   const setDay = useTabel((s) => s.setDay)
   const clearMonth = useTabel((s) => s.clearMonth)
   const copyMonth = useTabel((s) => s.copyMonth)
@@ -63,12 +72,12 @@ export default function Home() {
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [focusAdd, setFocusAdd] = useState(false)
+  const [adminOpen, setAdminOpen] = useState(false)
   const [fillOpen, setFillOpen] = useState(false)
   const [clearOpen, setClearOpen] = useState(false)
   const [editingDay, setEditingDay] = useState<number | null>(null)
 
-  const profile = profiles.find((p) => p.id === activeId) ?? profiles[0]
+  const profile = me
 
   const y = ym.getFullYear()
   const m = ym.getMonth()
@@ -96,7 +105,8 @@ export default function Home() {
     void load()
   }, [load])
 
-  if (offline) {
+  // сервер недоступен
+  if (serverDown) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4 text-center">
         <div className="flex size-14 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
@@ -115,24 +125,23 @@ export default function Home() {
     )
   }
 
-  if (!loaded || !profile) {
+  // первый запрос ещё в полёте
+  if (!booted) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4">
         <div className="flex size-14 animate-pulse items-center justify-center rounded-2xl bg-emerald-600/90 text-white">
           <Clock3 className="size-7" />
         </div>
-        <p className="text-sm text-muted-foreground">Загружаем табель…</p>
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" /> Загружаем табель…
+        </p>
       </div>
     )
   }
 
-  const openAddProfile = () => {
-    setFocusAdd(true)
-    setSettingsOpen(true)
-  }
-  const openSettings = () => {
-    setFocusAdd(false)
-    setSettingsOpen(true)
+  // нет сессии — экран входа (первый запуск / пин / имя)
+  if (!authed || !profile) {
+    return <LoginScreen />
   }
 
   const handleFill = (opts: FillOptions) => {
@@ -175,11 +184,11 @@ export default function Home() {
   return (
     <div className="flex min-h-screen flex-col">
       <HeaderBar
-        profiles={profiles}
-        activeId={profile.id}
-        onSwitch={setActive}
-        onAddProfile={openAddProfile}
-        onOpenSettings={openSettings}
+        profile={profile}
+        isAdmin={isAdmin}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAdmin={() => setAdminOpen(true)}
+        onLogout={() => void logout()}
       />
 
       <main className="mx-auto w-full max-w-6xl flex-1 space-y-5 px-4 py-6">
@@ -266,31 +275,31 @@ export default function Home() {
       <footer className="mt-auto border-t">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted-foreground">
           <span>Табель — учёт рабочих часов и примерной ЗП</span>
-          <span>Данные хранятся на сервере — доступны с любого устройства</span>
+          <span>Каждый профиль — за своим пинкодом, данные на сервере</span>
         </div>
       </footer>
 
       <ProfileDialog
         open={settingsOpen}
-        onOpenChange={(o) => {
-          setSettingsOpen(o)
-          if (!o) setFocusAdd(false)
-        }}
-        profiles={profiles}
-        activeId={profile.id}
-        focusAdd={focusAdd}
+        onOpenChange={setSettingsOpen}
+        profile={profile}
         onUpdate={updateProfile}
-        onAdd={async (name) => {
-          const ok = await addProfile(name)
-          if (ok) {
-            toast.success(`Профиль «${name}» создан`, {
-              description: 'Задайте ставку и шаблон дня в настройках профиля',
-            })
-          }
-        }}
-        onDelete={() => toast.success('Профиль удалён')}
-        onSwitch={setActive}
+        onChangePin={changeOwnPin}
       />
+
+      {isAdmin && (
+        <AdminDialog
+          open={adminOpen}
+          onOpenChange={setAdminOpen}
+          profiles={adminProfiles}
+          meId={profile.id}
+          onOpenProfile={openProfile}
+          onCreate={createProfile}
+          onUpdate={adminUpdateProfile}
+          onDelete={deleteProfile}
+          onSetPin={setProfilePin}
+        />
+      )}
 
       <FillDialog
         open={fillOpen}

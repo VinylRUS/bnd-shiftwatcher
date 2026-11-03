@@ -1,6 +1,12 @@
 // Схема данных Табеля.
 // Профили (сотрудники) и записи по дням. База — SQLite, файл задаётся
 // переменной окружения DATABASE_URL (в Docker — том /data).
+//
+// Авторизация (v9): вход в профиль по 6-значному пинкоду. Пин хранится
+// хешем (scrypt, см. src/lib/server/auth.ts); пока пин не установлен,
+// первый вход выполняется по имени профиля, после чего сразу предлагается
+// задать пин. Первый (старейший) профиль — админ: создаёт и управляет
+// остальными профилями. Сессии — в таблице Session, токен в cookie.
 
 generator client {
   provider = "prisma-client-js"
@@ -21,11 +27,29 @@ model Profile {
   defLunch   Boolean  @default(true)
   defLunchMin Int     @default(60)
   defPlace   String   @default("Склад")
+  /// хеш пинкода (scrypt), null — пин ещё не установлен (первый вход по имени)
+  pinHash    String?
+  /// админ создаёт профили и управляет ими (по умолчанию — первый профиль)
+  isAdmin    Boolean  @default(false)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   days       DayRow[]
+  sessions   Session[]
 
   @@index([createdAt])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  /// случайный токен из cookie tabel_session
+  token     String   @unique
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([profileId])
+  @@index([expiresAt])
 }
 
 model DayRow {

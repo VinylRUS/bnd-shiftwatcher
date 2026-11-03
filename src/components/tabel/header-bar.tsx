@@ -1,22 +1,10 @@
 'use client'
 
 import { useTheme } from 'next-themes'
-import { Clock3, Moon, Settings2, Sun, UserRoundPlus } from 'lucide-react'
+import { Clock3, LogOut, Moon, Settings2, Sun, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useMounted } from '@/hooks/use-mounted'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import type { Profile } from '@/lib/tabel'
-
-const ADD_VALUE = '__add__'
+import { cn } from '@/lib/utils'
 
 function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme()
@@ -37,14 +25,16 @@ function ThemeToggle() {
 }
 
 type Props = {
-  profiles: Profile[]
-  activeId: string
-  onSwitch: (id: string) => void
-  onAddProfile: () => void
+  /** свой профиль (сессия) */
+  profile: { id: string; name: string }
+  isAdmin: boolean
   onOpenSettings: () => void
+  onOpenAdmin: () => void
+  onLogout: () => void
 }
 
-export function HeaderBar({ profiles, activeId, onSwitch, onAddProfile, onOpenSettings }: Props) {
+export function HeaderBar({ profile, isAdmin, onOpenSettings, onOpenAdmin, onLogout }: Props) {
+  const initial = profile.name.slice(0, 1).toUpperCase()
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-4">
@@ -58,36 +48,36 @@ export function HeaderBar({ profiles, activeId, onSwitch, onAddProfile, onOpenSe
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <Select
-            value={activeId}
-            onValueChange={(v) => {
-              if (v === ADD_VALUE) onAddProfile()
-              else onSwitch(v)
-            }}
+        <div className="ml-auto flex items-center gap-1">
+          {/* кто в системе */}
+          <div
+            className="flex min-w-0 items-center gap-2 rounded-full border bg-card py-1 pl-1 pr-3 shadow-sm"
+            title={isAdmin ? 'Вы вошли как администратор' : 'Ваш профиль'}
           >
-            <SelectTrigger
-              className="w-[132px] sm:w-[190px]"
-              aria-label="Выбор профиля"
-              title={profiles.find((p) => p.id === activeId)?.name}
+            <span
+              className={cn(
+                'flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                isAdmin ? 'bg-emerald-600 text-white' : 'bg-muted text-muted-foreground',
+              )}
             >
-              <SelectValue placeholder="Профиль" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectLabel className="text-muted-foreground">Профили</SelectLabel>
-                {profiles.map((p) => (
-                  <SelectItem key={p.id} value={p.id} className="max-w-[240px] truncate">
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-              <SelectSeparator />
-              <SelectItem value={ADD_VALUE} className="text-emerald-700 dark:text-emerald-400">
-                <UserRoundPlus className="size-4" /> Новый профиль
-              </SelectItem>
-            </SelectContent>
-          </Select>
+              {initial}
+            </span>
+            <span className="max-w-[88px] truncate text-sm font-medium sm:max-w-[160px]">
+              {profile.name}
+            </span>
+          </div>
+
+          {isAdmin && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onOpenAdmin}
+              title="Профили и доступы"
+              aria-label="Профили и доступы"
+            >
+              <Users className="size-4.5" />
+            </Button>
+          )}
 
           <Button
             variant="ghost"
@@ -99,6 +89,15 @@ export function HeaderBar({ profiles, activeId, onSwitch, onAddProfile, onOpenSe
             <Settings2 className="size-4.5" />
           </Button>
           <ThemeToggle />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onLogout}
+            title="Выйти из профиля"
+            aria-label="Выйти из профиля"
+          >
+            <LogOut className="size-4.5" />
+          </Button>
         </div>
       </div>
     </header>

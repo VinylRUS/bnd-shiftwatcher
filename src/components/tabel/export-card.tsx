@@ -81,6 +81,7 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
   const [pending, setPending] = useState<{ profiles: Profile[]; activeId: string; date?: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const replaceAll = useTabel((s) => s.replaceAll)
+  const isAdmin = useTabel((s) => s.isAdmin)
 
   const st = periodStats(profile, y, m, period)
   const text = buildExport(profile, y, m, withHeader, period)
@@ -106,15 +107,33 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
     toast.success('Файл сохранён', { description: name })
   }
 
-  const onBackup = () => {
-    const { profiles, activeId } = useTabel.getState()
-    const data = JSON.stringify(
-      { app: 'tabel', version: 1, exportedAt: new Date().toISOString(), profiles, activeId },
-      null,
-      2,
-    )
-    downloadBlob(`tabel-backup-${y}-${mm}.json`, data, 'application/json;charset=utf-8')
-    toast.success('Резервная копия сохранена')
+  const onBackup = async () => {
+    try {
+      // админ сохраняет ВСЕ профили, обычный профиль — только себя
+      let profiles: Profile[] = [profile]
+      let activeId = profile.id
+      if (isAdmin) {
+        const res = await fetch('/api/export-all')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = (await res.json()) as { profiles?: Profile[] }
+        profiles = Array.isArray(data.profiles) ? data.profiles : []
+        if (profiles.length === 0) throw new Error('пусто')
+        activeId = profiles.some((p) => p.id === profile.id) ? profile.id : profiles[0].id
+      }
+      const data = JSON.stringify(
+        { app: 'tabel', version: 1, exportedAt: new Date().toISOString(), profiles, activeId },
+        null,
+        2,
+      )
+      downloadBlob(`tabel-backup-${y}-${mm}.json`, data, 'application/json;charset=utf-8')
+      toast.success('Резервная копия сохранена', {
+        description: isAdmin ? `Все профили: ${profiles.length}` : 'Ваш профиль',
+      })
+    } catch {
+      toast.error('Не удалось сохранить копию', {
+        description: 'Сервер недоступен — попробуйте ещё раз',
+      })
+    }
   }
 
   const onFileChosen = async (file: File | undefined) => {
@@ -143,7 +162,7 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
 
   const applyImport = async () => {
     if (!pending) return
-    const ok = await replaceAll({ profiles: pending.profiles, activeId: pending.activeId })
+    const ok = await replaceAll({ profiles: pending.profiles })
     if (ok) {
       toast.success('Данные восстановлены', {
         description: `Профилей: ${pending.profiles.length}`,
@@ -256,23 +275,33 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
               Резервная копия
             </div>
             <p className="text-xs text-muted-foreground">
-              Табели хранятся на сервере. Копия пригодится, чтобы перенести данные
-              на другой сервер или подстраховаться перед обновлением.
+              {isAdmin
+                ? 'Копия всех профилей табеля — пригодится для переезда на другой сервер или подстраховки перед обновлением.'
+                : 'Копия вашего профиля. Полную копию табеля делает администратор.'}
             </p>
-            <div className="grid grid-cols-2 gap-2">
-              <Button variant="outline" size="sm" onClick={onBackup}>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" className="flex-1" onClick={onBackup}>
                 <Download /> Сохранить
               </Button>
-              <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
-                <RotateCcw /> Восстановить
-              </Button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="application/json,.json"
-                className="hidden"
-                onChange={(e) => onFileChosen(e.target.files?.[0])}
-              />
+              {isAdmin && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    <RotateCcw /> Восстановить
+                  </Button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => onFileChosen(e.target.files?.[0])}
+                  />
+                </>
+              )}
             </div>
           </div>
         </CardContent>
@@ -284,7 +313,9 @@ export function ExportCard({ profile, y, m }: { profile: Profile; y: number; m: 
             <AlertDialogTitle>Восстановить резервную копию?</AlertDialogTitle>
             <AlertDialogDescription>
               Текущие данные будут заменены: профилей — {pending?.profiles.length}
-              {pending?.date ? `, копия от ${pending.date}` : ''}. Это действие нельзя отменить.
+              {pending?.date ? `, копия от ${pending.date}` : ''}. Пинкоды в копии не
+              хранятся — после восстановления все входят по имени и задают пин заново.
+              Это действие нельзя отменить.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

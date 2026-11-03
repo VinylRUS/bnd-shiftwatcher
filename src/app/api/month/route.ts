@@ -1,12 +1,16 @@
 // PUT /api/month — заменить весь месяц одним запросом.
 // Используется «Заполнить по шаблону», «Скопировать прошлый месяц»
-// и «Очистить месяц» (тогда days = {}).
+// и «Очистить месяц» (тогда days = {}). Доступен только свой профиль.
 import { db } from '@/lib/db'
+import { authError, currentProfile, noSession } from '@/lib/server/auth'
 import { entryToRow, errMessage, jsonError, monthPutSchema } from '@/lib/server/tabel-api'
 
 export const dynamic = 'force-dynamic'
 
 export async function PUT(request: Request) {
+  const me = await currentProfile()
+  if (!me) return noSession()
+
   let body: unknown
   try {
     body = await request.json()
@@ -17,6 +21,10 @@ export async function PUT(request: Request) {
   const parsed = monthPutSchema.safeParse(body)
   if (!parsed.success) return jsonError(errMessage(parsed.error))
   const { profileId, monthKey, days } = parsed.data
+
+  if (profileId !== me.id) {
+    return authError('Доступен только ваш профиль', 403, 'FORBIDDEN')
+  }
 
   try {
     const exists = await db.profile.findUnique({ where: { id: profileId }, select: { id: true } })
