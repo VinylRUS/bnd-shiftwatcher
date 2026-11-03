@@ -145,3 +145,6 @@ bun scripts/test-export.ts       # формат выгрузки для HR
   `Cannot find module 'effect'` или циклом «жду prisma/migrate.js» — это
   старые версии образа (v1–v6): пересоберите без кэша
   (`docker compose build --no-cache`), на bothost — повторный деплой.
+- v8: из package.json убраны 39 неиспользуемых шаблонных зависимостей
+  (827 → 486 пакетов) — сборка снова помещается в диск билдера
+  (была ошибка «no space left on device» на стадии `bun install`).
